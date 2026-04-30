@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 가상환경
+.venv/
+venv/
+env/
+ENV/
+
+# DuckDB 로컬 캐시 (자동 재생성, 종목 데이터만 들어있지만 바이너리)
+*.duckdb
+*.duckdb.wal
+
+# 로그/임시 파일
+*.log
+out.log
+err.log
+
+# 환경변수 파일 — 절대 커밋 금지!
+.env
+.env.local
+.env.*.local
+
+# IDE / 에디터
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# 빌드 산출물
+build/
+dist/
+*.egg-info/
+
+# 테스트
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS
+Thumbs.db
+desktop.ini
