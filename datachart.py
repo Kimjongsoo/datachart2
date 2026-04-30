@@ -1079,9 +1079,13 @@ def fetch_minute_yahoo(code: str, interval: str = "5m", days: int = 60) -> pd.Da
             continue
         if hasattr(df.columns, "levels"):
             df.columns = [c[0] for c in df.columns]
-        # KST naive
+        # KST naive로 정규화 — yfinance가 tz-aware/naive 둘 다 가능하므로 양쪽 처리
         try:
-            df.index = df.index.tz_convert("Asia/Seoul").tz_localize(None)
+            if df.index.tz is None:
+                # naive → UTC로 가정 후 KST 변환
+                df.index = df.index.tz_localize("UTC").tz_convert("Asia/Seoul").tz_localize(None)
+            else:
+                df.index = df.index.tz_convert("Asia/Seoul").tz_localize(None)
         except (TypeError, AttributeError):
             pass
         df = df.reset_index()
@@ -1283,6 +1287,11 @@ class DataChartWindow(QMainWindow):
         load_btn = QPushButton("불러오기")
         load_btn.clicked.connect(self.load_all)
         bar.addWidget(load_btn)
+
+        # 종목명 표시
+        self.name_label = QLabel("-")
+        self.name_label.setStyleSheet("font-weight: bold; padding: 0 12px; color: #2266cc;")
+        bar.addWidget(self.name_label)
 
         bar.addWidget(QLabel("주기"))
         self.tf_combo = QComboBox()
@@ -1510,6 +1519,7 @@ class DataChartWindow(QMainWindow):
         self._last_kis_price = None
 
         name = get_name(code)
+        self.name_label.setText(f"📊 {name}")
         self.status.setText(f"{name}({code}) 조회 중...")
         QApplication.processEvents()
 
