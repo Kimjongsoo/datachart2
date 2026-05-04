@@ -1344,12 +1344,12 @@ def fetch_minute_yahoo(code: str, interval: str = "5m", days: int = 60) -> pd.Da
             continue
         if hasattr(df.columns, "levels"):
             df.columns = [c[0] for c in df.columns]
-        # KST naive로 정규화 — yfinance가 tz-aware/naive 둘 다 가능하므로 양쪽 처리
+        # KST naive로 정규화
+        # - tz-aware: KST로 변환 후 naive 만들기
+        # - naive: 한국 종목(.KS/.KQ) yfinance는 이미 현지(KST) 시각으로 반환하므로 그대로 둠
+        #   (이전엔 UTC로 가정해 +9 했더니 11:00 → 20:00으로 잘못 찍히는 버그 발생)
         try:
-            if df.index.tz is None:
-                # naive → UTC로 가정 후 KST 변환
-                df.index = df.index.tz_localize("UTC").tz_convert("Asia/Seoul").tz_localize(None)
-            else:
+            if df.index.tz is not None:
                 df.index = df.index.tz_convert("Asia/Seoul").tz_localize(None)
         except (TypeError, AttributeError):
             pass
