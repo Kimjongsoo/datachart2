@@ -421,14 +421,29 @@ import urllib.parse as _urlparse
 
 @_contextlib.contextmanager
 def _silence_stderr():
-    """pykrx 등 라이브러리가 stderr에 직접 print하는 노이즈 일시 차단."""
+    """pykrx 등이 sys.stderr / sys.__stderr__ / OS fd 2로 직접 출력하는
+    노이즈를 모두 일시 차단. pykrx는 sys.__stderr__에 직접 print하므로
+    sys.stderr만 바꿔서는 안 잡힘."""
+    import os as _os
     import sys as _sys
-    old = _sys.stderr
-    _sys.stderr = _io.StringIO()
+    old_stderr = _sys.stderr
+    old_under = _sys.__stderr__
+    sink = _io.StringIO()
+    # 1) 파이썬 레벨 두 군데 모두 sink로
+    _sys.stderr = sink
+    _sys.__stderr__ = sink
+    # 2) OS 레벨 fd 2 → /dev/null (직접 write(2, ...) 호출도 차단)
+    old_fd = _os.dup(2)
+    devnull_fd = _os.open(_os.devnull, _os.O_WRONLY)
+    _os.dup2(devnull_fd, 2)
     try:
         yield
     finally:
-        _sys.stderr = old
+        _sys.stderr = old_stderr
+        _sys.__stderr__ = old_under
+        _os.dup2(old_fd, 2)
+        _os.close(old_fd)
+        _os.close(devnull_fd)
 
 KRX_API_BASE = "https://data-dbg.krx.co.kr/svc/apis"
 
