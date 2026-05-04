@@ -28,6 +28,8 @@ os.environ.setdefault("QT_API", "pyside6")
 # Windows DPI 경고 억제 (Qt가 이미 잡힌 DPI 컨텍스트를 덮어쓰지 않도록)
 os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "0")
 os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "0")
+# Qt qpa.window 카테고리 로그 비활성화 (DPI awareness 경고 차단)
+os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.window=false;qt.qpa.windows=false")
 
 import sys
 import contextlib as _contextlib
@@ -42,11 +44,17 @@ class _PykrxNoiseFilter:
     특정 노이즈 문구만 걸러내고 나머지(예: 진짜 traceback)는 정상 통과시킴."""
 
     _NOISE_PHRASES = (
+        # pykrx 노이즈
         "KRX 로그인 실패",
         "KRX_ID 또는 KRX_PW",
         "Error occurred in get_market_",
         "Error occurred in get_stock_",
         "Expecting value: line 1 column 1",
+        # Qt DPI awareness 경고 (Windows에서 이미 DPI 컨텍스트 잡혀있을 때)
+        "qt.qpa.window:",
+        "SetProcessDpiAwarenessContext()",
+        "DPI_AWARENESS_CONTEXT_PER_MONITOR",
+        "Qt's default DPI awareness",
     )
 
     def __init__(self, original):
