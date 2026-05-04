@@ -2363,24 +2363,42 @@ class DataChartWindow(QMainWindow):
         except Exception:
             pass
 
+    @staticmethod
+    def _make_diagonal_brush(color_rgb: tuple, tile: int = 8, alpha: int = 220):
+        """Qt.BDiagPattern이 pyqtgraph FillBetweenItem에서 무시되는 문제 우회.
+        QPixmap에 대각선을 직접 그려서 텍스처 brush로 반환 (타일링되어 빗금처럼 보임)."""
+        from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPixmap
+        pix = QPixmap(tile, tile)
+        pix.fill(QColor(0, 0, 0, 0))   # 투명 배경
+        painter = QPainter(pix)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        color = QColor(*color_rgb, alpha)
+        painter.setPen(QPen(color, 1))
+        # 좌하 → 우상 대각선 (BDiagPattern 모양)
+        painter.drawLine(0, tile, tile, 0)
+        # 타일 경계가 자연스럽게 이어지도록 인접 라인 추가
+        painter.drawLine(-tile, tile, 0, 0)
+        painter.drawLine(tile, tile + tile, tile + tile, tile)
+        painter.end()
+        return QBrush(pix)
+
     def _draw_kumo_from_items(self, item_a, item_b) -> None:
         """선행스팬1·2 사이를 빗금으로 채움.
-        Brush.setStyle(BDiagPattern)은 알파 < 255면 빗금 안 보일 수 있어
-        솔리드 옅은 fill + 빗금 추가 두 겹으로 그림 (양쪽 다 fail-safe)."""
+        pyqtgraph FillBetweenItem이 Qt brush 패턴을 무시하므로
+        픽스맵 텍스처를 만들어 brush로 사용."""
         import pyqtgraph as pg
-        from PySide6.QtGui import QBrush, QColor
+        from PySide6.QtGui import QColor
         a = item_a if hasattr(item_a, "xData") else getattr(item_a, "plot_obj", item_a)
         b = item_b if hasattr(item_b, "xData") else getattr(item_b, "plot_obj", item_b)
         if a is None or b is None:
             return
-        # 1) 솔리드 옅은 녹색 fill (구름대 영역을 일단 시각적으로 표시)
-        solid = pg.mkBrush(QColor(95, 184, 95, 70))
+        # 1) 옅은 솔리드 fill — 구름대 영역을 시각적으로 잡아두기
+        solid = pg.mkBrush(QColor(95, 184, 95, 50))
         fill_solid = pg.FillBetweenItem(a, b, brush=solid)
         self.price_ax.addItem(fill_solid)
-        # 2) 위에 빗금 패턴 (불투명 색상이라야 패턴 보임)
-        hatch = QBrush(QColor(40, 130, 60))   # 불투명 녹색
-        hatch.setStyle(Qt.BDiagPattern)
-        fill_hatch = pg.FillBetweenItem(a, b, brush=hatch)
+        # 2) 빗금 텍스처 fill — 위에 겹쳐서 hatch 효과
+        hatch_brush = self._make_diagonal_brush((40, 130, 60), tile=8, alpha=220)
+        fill_hatch = pg.FillBetweenItem(a, b, brush=hatch_brush)
         self.price_ax.addItem(fill_hatch)
 
     def _draw_compare_index(self, d: pd.DataFrame) -> None:
