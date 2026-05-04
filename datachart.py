@@ -2348,18 +2348,22 @@ class DataChartWindow(QMainWindow):
             self._draw_ichimoku(d)
 
     def _draw_ichimoku(self, d: pd.DataFrame) -> None:
-        """일목균형표 — 선행스팬1·2 + 구름대만 표시 (전환선/기준선/후행스팬은 숨김)."""
+        """일목균형표 — 선행스팬1·2를 점선으로 표시 (다른 보조지표들과 시각적 구분)."""
         ichi = compute_ichimoku(d)
         if ichi["senkou_a"].dropna().empty:
             return
-        # 선행스팬1: 빨강, 선행스팬2: 파랑 (한국 시장 관례 — 양수=빨강, 음수=파랑)
-        item_a = fplt.plot(ichi["senkou_a"], ax=self.price_ax,
-                           color="#dd2200", width=0.5)
-        item_b = fplt.plot(ichi["senkou_b"], ax=self.price_ax,
-                           color="#0066dd", width=0.5)
-        # Kumo 색칠
+        item_a = fplt.plot(ichi["senkou_a"], ax=self.price_ax, color="#dd2200")
+        item_b = fplt.plot(ichi["senkou_b"], ax=self.price_ax, color="#0066dd")
+        # 점선 펜으로 override
         try:
-            self._draw_kumo_from_items(item_a, item_b)
+            import pyqtgraph as pg
+            from PySide6.QtGui import QColor
+            a = item_a if hasattr(item_a, "setPen") else getattr(item_a, "plot_obj", item_a)
+            b = item_b if hasattr(item_b, "setPen") else getattr(item_b, "plot_obj", item_b)
+            if a is not None and hasattr(a, "setPen"):
+                a.setPen(pg.mkPen(QColor("#dd2200"), width=1, style=Qt.DashLine))
+            if b is not None and hasattr(b, "setPen"):
+                b.setPen(pg.mkPen(QColor("#0066dd"), width=1, style=Qt.DashLine))
         except Exception:
             pass
 
