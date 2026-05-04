@@ -2335,26 +2335,41 @@ class DataChartWindow(QMainWindow):
 
     @staticmethod
     def _format_y_axis_kmb(ax) -> None:
-        """Y축 tick 라벨을 K/M/B 약어 형식으로 변환.
-        예: 100,000 → 100K, 1,500,000 → 1.5M, 2,000,000,000 → 2.0B"""
+        """Y축 tick 라벨을 K/M/B 약어로 변환. 범위가 작아도 적절히 표시.
+        - pyqtgraph는 axis scale factor를 적용해 (v * scale)이 실제값.
+        - 범위(spacing)에 따라 소수점 자릿수 동적 조정.
+        예: 5분봉 200주 → '200', 60일 일봉 1.5M → '1.5M'.
+        """
         def tick_strings(values, scale, spacing):
+            scale = scale or 1.0
             out = []
             for v in values:
-                absv = abs(v)
-                if absv >= 1_000_000_000:
-                    out.append(f"{v / 1e9:.1f}B")
-                elif absv >= 1_000_000:
-                    out.append(f"{v / 1e6:.1f}M")
-                elif absv >= 1_000:
-                    out.append(f"{v / 1e3:.0f}K")
+                actual = v * scale
+                absv = abs(actual)
+                if absv >= 1e9:
+                    out.append(f"{actual / 1e9:.2f}B")
+                elif absv >= 1e6:
+                    # 100M 이상이면 1자리, 미만이면 2자리 소수
+                    out.append(f"{actual / 1e6:.1f}M" if absv >= 1e8 else f"{actual / 1e6:.2f}M")
+                elif absv >= 1e3:
+                    out.append(f"{actual / 1e3:.1f}K" if absv < 1e4 else f"{actual / 1e3:.0f}K")
+                elif absv >= 1:
+                    out.append(f"{actual:.0f}")
+                elif absv > 0:
+                    out.append(f"{actual:.2f}")
                 else:
-                    out.append(f"{v:.0f}")
+                    out.append("0")
             return out
         for axis_name in ("right", "left", "bottom", "top"):
             try:
                 axis = ax.getAxis(axis_name)
                 if axis is not None:
                     axis.tickStrings = tick_strings
+                    # SI prefix 자동 적용 끄기 — 우리 포맷터가 직접 K/M/B 처리
+                    try:
+                        axis.enableAutoSIPrefix(False)
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
