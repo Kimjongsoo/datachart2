@@ -39,7 +39,8 @@ from PySide6.QtCore import Qt, QTimer
 import time as _time
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QLabel,
-    QLineEdit, QMainWindow, QPushButton, QTabWidget, QVBoxLayout, QWidget,
+    QLineEdit, QMainWindow, QPushButton, QSplitter, QTabWidget, QVBoxLayout,
+    QWidget,
 )
 import finplot as fplt
 from pykrx import stock
@@ -1392,6 +1393,14 @@ class DataChartWindow(QMainWindow):
         self.name_label.setStyleSheet("font-weight: bold; padding: 0 12px; color: #2266cc;")
         bar.addWidget(self.name_label)
 
+        # 큰 현재가 라벨 (상승=빨강, 하락=파랑)
+        self.price_label = QLabel("-")
+        self.price_label.setStyleSheet(
+            "font-size: 18px; font-weight: bold; padding: 2px 10px; "
+            "background-color: #f5f5f5; border-radius: 4px;"
+        )
+        bar.addWidget(self.price_label)
+
         bar.addWidget(QLabel("주기"))
         self.tf_combo = QComboBox()
         self.tf_combo.addItem("일봉", "day")
@@ -1429,14 +1438,21 @@ class DataChartWindow(QMainWindow):
         self.tabs = QTabWidget()
         root.addWidget(self.tabs, stretch=1)
 
-        # 탭 1: 캔들차트 (가격 + 거래량 2단)
-        price_axes = _as_list(fplt.create_plot_widget(
-            master=self, rows=2, init_zoom_periods=120
-        ))
-        self.price_ax = price_axes[0]
-        self.vol_ax = price_axes[1]
+        # 탭 1: 캔들차트 — 가격/거래량을 별개 plot widget으로 분리, QSplitter로 쌓고 X축 연동
+        price_w = fplt.create_plot_widget(master=self, rows=1, init_zoom_periods=120)
+        vol_w = fplt.create_plot_widget(master=self, rows=1, init_zoom_periods=120)
+        self.price_ax = price_w[0] if isinstance(price_w, (list, tuple)) else price_w
+        self.vol_ax = vol_w[0] if isinstance(vol_w, (list, tuple)) else vol_w
+        self.vol_ax.setXLink(self.price_ax)  # X축 동기화
         self.axs_price = [self.price_ax, self.vol_ax]
-        self.tabs.addTab(_wrap_ax(self.price_ax), "차트")
+        chart_split = QSplitter(Qt.Vertical)
+        chart_split.setChildrenCollapsible(False)
+        chart_split.addWidget(self.price_ax.ax_widget)
+        chart_split.addWidget(self.vol_ax.ax_widget)
+        chart_split.setStretchFactor(0, 3)
+        chart_split.setStretchFactor(1, 1)
+        chart_split.setSizes([600, 200])
+        self.tabs.addTab(chart_split, "차트")
 
         # 탭 2: 수급(투자자별 누적 순매수)
         flow_axes = _as_list(fplt.create_plot_widget(
@@ -1470,14 +1486,23 @@ class DataChartWindow(QMainWindow):
         self.fund_form.addRow("외국인 지분율(%)", self.lbl_foreign)
         fund_layout.addLayout(self.fund_form)
 
-        fund_axes = _as_list(fplt.create_plot_widget(
-            master=self, rows=3, init_zoom_periods=120
-        ))
-        self.fund_ax = fund_axes[0]       # PER/PBR 추이
-        self.fund_ax2 = fund_axes[1]      # 외국인 지분율
-        self.fund_revenue_ax = fund_axes[2]  # 매출/영업이익 분기
+        # 펀더멘털 탭: 3개 plot widget을 QSplitter로 쌓고 X축 연동
+        per_w = fplt.create_plot_widget(master=self, rows=1, init_zoom_periods=120)
+        fr_w = fplt.create_plot_widget(master=self, rows=1, init_zoom_periods=120)
+        rev_w = fplt.create_plot_widget(master=self, rows=1, init_zoom_periods=120)
+        self.fund_ax = per_w[0] if isinstance(per_w, (list, tuple)) else per_w
+        self.fund_ax2 = fr_w[0] if isinstance(fr_w, (list, tuple)) else fr_w
+        self.fund_revenue_ax = rev_w[0] if isinstance(rev_w, (list, tuple)) else rev_w
+        self.fund_ax2.setXLink(self.fund_ax)
+        self.fund_revenue_ax.setXLink(self.fund_ax)
         self.axs_fund = [self.fund_ax, self.fund_ax2, self.fund_revenue_ax]
-        fund_layout.addWidget(_wrap_ax(self.fund_ax), stretch=1)
+        fund_split = QSplitter(Qt.Vertical)
+        fund_split.setChildrenCollapsible(False)
+        fund_split.addWidget(self.fund_ax.ax_widget)
+        fund_split.addWidget(self.fund_ax2.ax_widget)
+        fund_split.addWidget(self.fund_revenue_ax.ax_widget)
+        fund_split.setSizes([200, 200, 200])
+        fund_layout.addWidget(fund_split, stretch=1)
         self.tabs.addTab(fund_widget, "펀더멘털")
 
         # finplot.refresh()는 master.axs에서 모든 axes를 찾아 다시 그림
@@ -1729,7 +1754,7 @@ class DataChartWindow(QMainWindow):
                   legend=f"MA{ma_long}", color="#ff9933")
         fplt.volume_ocv(d[["open", "close", "volume"]], ax=self.vol_ax)
 
-        # 우측 현재가 박스: 빨강(상승)/파랑(하락) 색상 배경
+        # 우측 현재가 박스 (anchor=(1,0.5)이라 텍스트가 마지막 봉 왼쪽으로 그려져 화면 안)
         try:
             import pyqtgraph as pg
             last_close = float(d["close"].iloc[-1])
@@ -1737,15 +1762,16 @@ class DataChartWindow(QMainWindow):
             change = last_close - prev_close
             change_pct = (change / prev_close * 100) if prev_close else 0.0
             box_color = "#cc0000" if change >= 0 else "#0066cc"
-            text = f" {last_close:,.0f}\n {change_pct:+.2f}% "
-            ti = pg.TextItem(text, color="#ffffff", anchor=(0, 0.5),
-                             fill=pg.mkBrush(box_color), border=pg.mkPen(box_color))
-            ti.setPos(d.index[-1], last_close)
-            self.price_ax.addItem(ti)
-            # 가로선도 함께
+            # 가로 점선
             hline = pg.InfiniteLine(pos=last_close, angle=0,
                                     pen=pg.mkPen(box_color, width=1, style=Qt.DashLine))
             self.price_ax.addItem(hline)
+            # 상단 컨트롤 바의 큰 가격 라벨 갱신 (안정적 표시)
+            self.price_label.setText(f"{last_close:,.0f}원  {change_pct:+.2f}%")
+            self.price_label.setStyleSheet(
+                f"font-size: 18px; font-weight: bold; padding: 2px 10px; "
+                f"color: {box_color}; background-color: #f5f5f5; border-radius: 4px;"
+            )
         except Exception:
             pass
 
