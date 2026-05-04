@@ -1844,7 +1844,7 @@ class DataChartWindow(QMainWindow):
         self.price_ax = price_w[0] if isinstance(price_w, (list, tuple)) else price_w
         self.vol_ax = vol_w[0] if isinstance(vol_w, (list, tuple)) else vol_w
         self.vol_ax.setXLink(self.price_ax)  # X축 동기화
-        self._format_y_axis_kmb(self.vol_ax)  # 거래량 Y축을 K/M 약어로
+        self._format_y_axis_kmb(self.vol_ax, label_text="거래량 (주)")
         self.axs_price = [self.price_ax, self.vol_ax]
         chart_split = QSplitter(Qt.Vertical)
         chart_split.setChildrenCollapsible(False)
@@ -1861,7 +1861,7 @@ class DataChartWindow(QMainWindow):
         ))
         self.flow_ax = flow_axes[0]
         self.axs_flow = [self.flow_ax]
-        self._format_y_axis_kmb(self.flow_ax)
+        self._format_y_axis_kmb(self.flow_ax, label_text="누적 순매수 (주)")
         self.tabs.addTab(_wrap_ax(self.flow_ax), "수급")
 
         # 탭 3: 펀더멘털 (요약 라벨 + PER/PBR 추이 차트)
@@ -1897,7 +1897,7 @@ class DataChartWindow(QMainWindow):
         self.fund_revenue_ax = rev_w[0] if isinstance(rev_w, (list, tuple)) else rev_w
         self.fund_ax2.setXLink(self.fund_ax)
         self.fund_revenue_ax.setXLink(self.fund_ax)
-        self._format_y_axis_kmb(self.fund_revenue_ax)  # 매출액 K/M 표기
+        self._format_y_axis_kmb(self.fund_revenue_ax, label_text="(억원)")
         self.axs_fund = [self.fund_ax, self.fund_ax2, self.fund_revenue_ax]
         fund_split = QSplitter(Qt.Vertical)
         fund_split.setChildrenCollapsible(False)
@@ -2334,11 +2334,10 @@ class DataChartWindow(QMainWindow):
         fplt.refresh()
 
     @staticmethod
-    def _format_y_axis_kmb(ax) -> None:
-        """Y축 tick 라벨을 K/M/B 약어로 변환. 범위가 작아도 적절히 표시.
-        - pyqtgraph는 axis scale factor를 적용해 (v * scale)이 실제값.
-        - 범위(spacing)에 따라 소수점 자릿수 동적 조정.
-        예: 5분봉 200주 → '200', 60일 일봉 1.5M → '1.5M'.
+    def _format_y_axis_kmb(ax, label_text: str = "") -> None:
+        """Y축 tick 라벨을 K/M/B 약어로 + 단위 라벨 추가.
+        - 범위에 따라 자동 단위 선택 (5분봉 작은 값 → raw, 일봉 큰 값 → K/M)
+        - label_text: '거래량(주)', '(억원)' 같은 단위 표시 (axis 옆에 세로 텍스트)
         """
         def tick_strings(values, scale, spacing):
             scale = scale or 1.0
@@ -2347,27 +2346,38 @@ class DataChartWindow(QMainWindow):
                 actual = v * scale
                 absv = abs(actual)
                 if absv >= 1e9:
-                    out.append(f"{actual / 1e9:.2f}B")
+                    out.append(f"{actual / 1e9:.1f}B")
+                elif absv >= 1e8:
+                    out.append(f"{actual / 1e6:.0f}M")        # 100M 이상: 정수
                 elif absv >= 1e6:
-                    # 100M 이상이면 1자리, 미만이면 2자리 소수
-                    out.append(f"{actual / 1e6:.1f}M" if absv >= 1e8 else f"{actual / 1e6:.2f}M")
+                    out.append(f"{actual / 1e6:.1f}M")        # 1M~100M: 1자리
+                elif absv >= 1e5:
+                    out.append(f"{actual / 1e3:.0f}K")        # 100K~1M: 정수
+                elif absv >= 1e4:
+                    out.append(f"{actual / 1e3:.0f}K")        # 10K~100K: 정수
                 elif absv >= 1e3:
-                    out.append(f"{actual / 1e3:.1f}K" if absv < 1e4 else f"{actual / 1e3:.0f}K")
+                    out.append(f"{actual / 1e3:.1f}K")        # 1K~10K: 1자리 (1.5K)
                 elif absv >= 1:
-                    out.append(f"{actual:.0f}")
+                    # 1~999: 천단위 콤마 (5분봉처럼 작은 거래량 가독성)
+                    out.append(f"{int(actual):,}")
                 elif absv > 0:
                     out.append(f"{actual:.2f}")
                 else:
                     out.append("0")
             return out
-        for axis_name in ("right", "left", "bottom", "top"):
+        for axis_name in ("right", "left"):
             try:
                 axis = ax.getAxis(axis_name)
-                if axis is not None:
-                    axis.tickStrings = tick_strings
-                    # SI prefix 자동 적용 끄기 — 우리 포맷터가 직접 K/M/B 처리
+                if axis is None:
+                    continue
+                axis.tickStrings = tick_strings
+                try:
+                    axis.enableAutoSIPrefix(False)
+                except Exception:
+                    pass
+                if label_text:
                     try:
-                        axis.enableAutoSIPrefix(False)
+                        axis.setLabel(text=label_text)
                     except Exception:
                         pass
             except Exception:
