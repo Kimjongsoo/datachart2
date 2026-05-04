@@ -1056,6 +1056,47 @@ def kis_diagnose() -> dict:
 
 
 # --- Yahoo Finance 분봉 (진짜 OHLC, 60일치, 무료, 인증 불필요) ------------
+def fetch_quarterly_revenue_yahoo(code: str) -> pd.DataFrame:
+    """Yahoo Finance에서 분기별 매출액·영업이익 조회. .KS / .KQ 자동 시도.
+    반환: DataFrame[date, revenue, operating_income] (단위: 원)
+    """
+    try:
+        import yfinance as yf
+    except ImportError:
+        return pd.DataFrame()
+    for suffix in (".KS", ".KQ"):
+        try:
+            t = yf.Ticker(code + suffix)
+            qf = t.quarterly_financials
+            if qf is None or qf.empty:
+                continue
+            # 컬럼은 분기말 날짜, 행은 항목명
+            rows = []
+            for q_date in qf.columns:
+                rev = None
+                op = None
+                for key in ("Total Revenue", "TotalRevenue", "Revenue"):
+                    if key in qf.index:
+                        rev = qf.loc[key, q_date]
+                        break
+                for key in ("Operating Income", "OperatingIncome",
+                            "Operating Revenue", "EBIT"):
+                    if key in qf.index:
+                        op = qf.loc[key, q_date]
+                        break
+                rows.append({
+                    "date": pd.to_datetime(q_date),
+                    "revenue": float(rev) if pd.notna(rev) else None,
+                    "operating_income": float(op) if pd.notna(op) else None,
+                })
+            df = pd.DataFrame(rows).dropna(subset=["revenue"], how="all")
+            if not df.empty:
+                return df.sort_values("date").reset_index(drop=True)
+        except Exception:
+            continue
+    return pd.DataFrame()
+
+
 def fetch_minute_yahoo(code: str, interval: str = "5m", days: int = 60) -> pd.DataFrame:
     """Yahoo Finance에서 한국주식 분봉 OHLCV.
     - interval: '1m'(7일) / '5m'(60일) / '15m'(60일) 등
@@ -1378,12 +1419,16 @@ class DataChartWindow(QMainWindow):
         self.tabs = QTabWidget()
         root.addWidget(self.tabs, stretch=1)
 
-        # 탭 1: 캔들차트
+        # 탭 1: 캔들차트 (가격/거래량/외국인누적/매출 4단)
         price_axes = _as_list(fplt.create_plot_widget(
-            master=self, rows=2, init_zoom_periods=120
+            master=self, rows=4, init_zoom_periods=120
         ))
-        self.price_ax, self.vol_ax = price_axes[0], price_axes[1]
-        self.axs_price = [self.price_ax, self.vol_ax]
+        self.price_ax = price_axes[0]
+        self.vol_ax = price_axes[1]
+        self.foreign_cum_ax = price_axes[2]
+        self.revenue_ax = price_axes[3]
+        self.axs_price = [self.price_ax, self.vol_ax,
+                          self.foreign_cum_ax, self.revenue_ax]
         self.tabs.addTab(_wrap_ax(self.price_ax), "차트")
 
         # 탭 2: 수급(투자자별 누적 순매수)
@@ -1629,9 +1674,11 @@ class DataChartWindow(QMainWindow):
 
     # --- 렌더러 ---------------------------------------------------------
     def _render_price(self, daily_df: pd.DataFrame, code: str) -> None:
-        """선택된 주기(일/주/5분)에 맞춰 캔들 + MA + 거래량 렌더."""
+        """선택된 주기(일/주/5분)에 맞춰 캔들 + MA + 거래량 + 외국인누적 + 매출 렌더."""
         self.price_ax.reset()
         self.vol_ax.reset()
+        self.foreign_cum_ax.reset()
+        self.revenue_ax.reset()
         tf = self.tf_combo.currentData()
 
         if tf == "week":
@@ -1674,6 +1721,63 @@ class DataChartWindow(QMainWindow):
         fplt.plot(d["close"].rolling(ma_long).mean(), ax=self.price_ax,
                   legend=f"MA{ma_long}", color="#ff9933")
         fplt.volume_ocv(d[["open", "close", "volume"]], ax=self.vol_ax)
+
+        # 우측 현재가 박스: 빨강(상승)/파랑(하락) 색상 배경
+        try:
+            import pyqtgraph as pg
+            last_close = float(d["close"].iloc[-1])
+            prev_close = float(d["close"].iloc[-2]) if len(d) > 1 else last_close
+            change = last_close - prev_close
+            change_pct = (change / prev_close * 100) if prev_close else 0.0
+            box_color = "#cc0000" if change >= 0 else "#0066cc"
+            text = f" {last_close:,.0f}\n {change_pct:+.2f}% "
+            ti = pg.TextItem(text, color="#ffffff", anchor=(0, 0.5),
+                             fill=pg.mkBrush(box_color), border=pg.mkPen(box_color))
+            ti.setPos(d.index[-1], last_close)
+            self.price_ax.addItem(ti)
+            # 가로선도 함께
+            hline = pg.InfiniteLine(pos=last_close, angle=0,
+                                    pen=pg.mkPen(box_color, width=1, style=Qt.DashLine))
+            self.price_ax.addItem(hline)
+        except Exception:
+            pass
+
+        # 외국인 누적 패널 (Naver 데이터 사용, 차트 기간에 맞춰 누적)
+        try:
+            flow = fetch_naver_investor_flow(code)
+            if not flow.empty:
+                f = flow.copy()
+                f["date"] = pd.to_datetime(f["date"])
+                f = f.set_index("date").sort_index()
+                # 차트 기간 안으로 자르고 누적 (단위: 주식수 → 만주)
+                f = f.loc[(f.index >= d.index.min()) & (f.index <= d.index.max())]
+                if not f.empty:
+                    cum_foreign = f["foreign_net"].cumsum() / 10000  # 만주
+                    fplt.plot(cum_foreign, ax=self.foreign_cum_ax,
+                              legend="외국인 누적순매수(만주)", color="#cc3333")
+        except Exception:
+            pass
+
+        # 매출 패널 (yfinance 분기 재무제표, 단위: 억원)
+        try:
+            rev = fetch_quarterly_revenue_yahoo(code)
+            if not rev.empty:
+                r = rev.copy()
+                r = r.set_index("date").sort_index()
+                # 차트 기간 안의 분기만
+                r = r.loc[r.index >= d.index.min()]
+                if not r.empty and "revenue" in r.columns:
+                    rev_series = (r["revenue"] / 1e8).dropna()  # 억원
+                    if not rev_series.empty:
+                        fplt.plot(rev_series, ax=self.revenue_ax,
+                                  legend="매출액(억)", color="#88aa44", style="o")
+                    if "operating_income" in r.columns:
+                        op_series = (r["operating_income"] / 1e8).dropna()
+                        if not op_series.empty:
+                            fplt.plot(op_series, ax=self.revenue_ax,
+                                      legend="영업이익(억)", color="#aa4488", style="o")
+        except Exception:
+            pass
 
         # 일목균형표 5선 (옵션)
         if self.cb_ichimoku.isChecked():
