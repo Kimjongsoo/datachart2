@@ -2013,36 +2013,50 @@ class DataChartWindow(QMainWindow):
         # 가격 라벨 — 매 틱 갱신 (스텔스 모드면 흑색 간략 표시)
         self._update_price_label(price, change_pct, is_live=True)
 
-        # 라이브 봉 누적 (모든 주기 지원)
+        # 라이브 봉 누적 (주기별 분기)
+        # 중요: KIS inquire-price의 open/high/low는 '오늘 일봉' OHL이지 5분봉 OHL이 아님.
+        #       5분봉 모드에선 체결가(price)로만 누적해야 봉이 일봉 저가까지 늘어지지 않음.
         tf = self.tf_combo.currentData()
         cum_vol = snap.get("cum_volume") or 0
         bar_start = self._bar_start_for_tf(tf)
-        # KIS snap의 시가/고가/저가 우선 활용 (그 봉 안에서 발생한 진짜 OHL)
-        snap_open = float(snap.get("open") or price)
-        snap_high = float(snap.get("high") or price)
-        snap_low = float(snap.get("low") or price)
-        if (self._live_bar is None
-                or self._live_bar.get("tf") != tf
-                or self._live_bar.get("start") != bar_start):
-            self._live_bar = {
-                "tf": tf,
-                "start": bar_start,
-                "open": snap_open,
-                "high": max(snap_high, price),
-                "low": min(snap_low, price),
-                "close": price,
-                "volume_at_start": cum_vol if tf == "min5" else 0,
-                "volume": cum_vol if tf in ("day", "week") else 0,
-            }
-        else:
-            lb = self._live_bar
-            lb["high"] = max(lb["high"], snap_high, price)
-            lb["low"] = min(lb["low"], snap_low, price)
-            lb["close"] = price
-            if tf == "min5":
-                lb["volume"] = max(0, cum_vol - lb["volume_at_start"])
+        is_new_bar = (self._live_bar is None
+                      or self._live_bar.get("tf") != tf
+                      or self._live_bar.get("start") != bar_start)
+
+        if tf == "min5":
+            # 5분봉: 체결가 단위 누적. KIS 일봉 OHL은 무시
+            if is_new_bar:
+                self._live_bar = {
+                    "tf": tf, "start": bar_start,
+                    "open": price, "high": price, "low": price, "close": price,
+                    "volume_at_start": cum_vol, "volume": 0,
+                }
             else:
-                # 일/주봉은 누적 거래량 그대로 사용
+                lb = self._live_bar
+                lb["high"] = max(lb["high"], price)
+                lb["low"] = min(lb["low"], price)
+                lb["close"] = price
+                lb["volume"] = max(0, cum_vol - lb["volume_at_start"])
+        else:
+            # 일/주봉: KIS의 오늘 일봉 OHL 사용 (앱 시작 전 발생한 OHL까지 정확히 반영)
+            snap_open = float(snap.get("open") or price)
+            snap_high = float(snap.get("high") or price)
+            snap_low = float(snap.get("low") or price)
+            if is_new_bar:
+                self._live_bar = {
+                    "tf": tf, "start": bar_start,
+                    "open": snap_open,
+                    "high": max(snap_high, price),
+                    "low": min(snap_low, price),
+                    "close": price,
+                    "volume_at_start": 0,
+                    "volume": cum_vol,
+                }
+            else:
+                lb = self._live_bar
+                lb["high"] = max(lb["high"], snap_high, price)
+                lb["low"] = min(lb["low"], snap_low, price)
+                lb["close"] = price
                 lb["volume"] = cum_vol
         self._last_kis_price = price
 
