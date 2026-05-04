@@ -44,6 +44,16 @@ from PySide6.QtWidgets import (
 import finplot as fplt
 from pykrx import stock
 
+# --- 한국 시장 관례: 상승=빨강, 하락=파랑 (캔들·거래량 색상) -------------
+fplt.candle_bull_color = "#dd2200"        # 상승봉 외곽선
+fplt.candle_bull_body_color = "#dd2200"   # 상승봉 채움
+fplt.candle_bear_color = "#0066dd"        # 하락봉 외곽선
+fplt.candle_bear_body_color = "#0066dd"   # 하락봉 채움
+fplt.volume_bull_color = "#ff9988"
+fplt.volume_bull_body_color = "#ff9988"
+fplt.volume_bear_color = "#88aaff"
+fplt.volume_bear_body_color = "#88aaff"
+
 # --- 설정 -----------------------------------------------------------------
 DB_PATH = Path(__file__).parent / "datachart.duckdb"
 DEFAULT_CODE = "489790"   # 한화비전
