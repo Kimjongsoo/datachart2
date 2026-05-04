@@ -2341,40 +2341,40 @@ class DataChartWindow(QMainWindow):
             self._draw_ichimoku(d)
 
     def _draw_ichimoku(self, d: pd.DataFrame) -> None:
-        """일목균형표 5선(얇게) + 구름대(Kumo) 빗금 색칠. 라벨 없음."""
+        """일목균형표 — 선행스팬1·2 + 구름대만 표시 (전환선/기준선/후행스팬은 숨김)."""
         ichi = compute_ichimoku(d)
-        if ichi["tenkan"].dropna().empty:
+        if ichi["senkou_a"].dropna().empty:
             return
-        fplt.plot(ichi["tenkan"],   ax=self.price_ax, color="#cc4444", width=0.5)
-        fplt.plot(ichi["kijun"],    ax=self.price_ax, color="#3377bb", width=0.5)
         # 선행스팬1·2: fplt.plot 반환을 받아 Kumo fill에 사용 (x 좌표 자동 정합)
         item_a = fplt.plot(ichi["senkou_a"], ax=self.price_ax,
-                           color="#5fb85f", width=0.5)
+                           color="#2e8b57", width=0.5)
         item_b = fplt.plot(ichi["senkou_b"], ax=self.price_ax,
                            color="#cc6677", width=0.5)
-        fplt.plot(ichi["chikou"],   ax=self.price_ax, color="#888833", width=0.5)
-        # Kumo (구름대) 빗금 — finplot이 반환한 PlotDataItem을 직접 fill에 사용
+        # Kumo 색칠
         try:
             self._draw_kumo_from_items(item_a, item_b)
         except Exception:
             pass
 
     def _draw_kumo_from_items(self, item_a, item_b) -> None:
-        """fplt.plot()이 반환한 PlotDataItem 두 개를 받아 그 사이를 빗금으로 채움.
-        finplot이 자체 변환한 동일 x축을 공유하므로 정렬 정확."""
+        """선행스팬1·2 사이를 빗금으로 채움.
+        Brush.setStyle(BDiagPattern)은 알파 < 255면 빗금 안 보일 수 있어
+        솔리드 옅은 fill + 빗금 추가 두 겹으로 그림 (양쪽 다 fail-safe)."""
         import pyqtgraph as pg
         from PySide6.QtGui import QBrush, QColor
-        # finplot의 plot 반환은 pg.PlotDataItem (또는 그것을 가진 wrapper). 둘 다 처리
         a = item_a if hasattr(item_a, "xData") else getattr(item_a, "plot_obj", item_a)
         b = item_b if hasattr(item_b, "xData") else getattr(item_b, "plot_obj", item_b)
         if a is None or b is None:
             return
-        # 빗금 brush — 녹색 BDiagPattern
-        brush = QBrush(QColor(34, 160, 60, 220))   # 진한 녹색, 빗금 라인이 잘 보이게
-        brush.setStyle(Qt.BDiagPattern)
-        fill = pg.FillBetweenItem(a, b, brush=brush)
-        fill.setZValue(-100)  # 캔들 뒤로 깔리도록
-        self.price_ax.addItem(fill)
+        # 1) 솔리드 옅은 녹색 fill (구름대 영역을 일단 시각적으로 표시)
+        solid = pg.mkBrush(QColor(95, 184, 95, 70))
+        fill_solid = pg.FillBetweenItem(a, b, brush=solid)
+        self.price_ax.addItem(fill_solid)
+        # 2) 위에 빗금 패턴 (불투명 색상이라야 패턴 보임)
+        hatch = QBrush(QColor(40, 130, 60))   # 불투명 녹색
+        hatch.setStyle(Qt.BDiagPattern)
+        fill_hatch = pg.FillBetweenItem(a, b, brush=hatch)
+        self.price_ax.addItem(fill_hatch)
 
     def _draw_compare_index(self, d: pd.DataFrame) -> None:
         """선택된 비교 지수를 종목 가격과 동일점 정규화해 오버레이."""
