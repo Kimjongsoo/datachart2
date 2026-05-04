@@ -30,8 +30,76 @@ os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "0")
 os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "0")
 
 import sys
+import contextlib as _contextlib
+import io as _io
 from datetime import datetime, timedelta
 from pathlib import Path
+
+
+# --- pykrx 노이즈 필터: 특정 문구만 차단, 나머지 stderr는 정상 통과 ---
+class _PykrxNoiseFilter:
+    """pykrx가 stderr/__stderr__로 print하는 'KRX 로그인 실패...' 등
+    특정 노이즈 문구만 걸러내고 나머지(예: 진짜 traceback)는 정상 통과시킴."""
+
+    _NOISE_PHRASES = (
+        "KRX 로그인 실패",
+        "KRX_ID 또는 KRX_PW",
+        "Error occurred in get_market_",
+        "Error occurred in get_stock_",
+        "Expecting value: line 1 column 1",
+    )
+
+    def __init__(self, original):
+        self._orig = original
+
+    def write(self, s):
+        if any(p in s for p in self._NOISE_PHRASES):
+            return  # 노이즈는 폐기
+        return self._orig.write(s)
+
+    def flush(self):
+        return self._orig.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._orig, name)
+
+
+# pykrx는 print() 함수 사용 → 기본적으로 stdout으로 나감.
+# stdout, stderr 둘 다 필터로 감싸 (그리고 backup reference도)
+_orig_stdout = sys.stdout
+_orig_stderr = sys.stderr
+sys.stdout = _PykrxNoiseFilter(_orig_stdout)
+sys.stderr = _PykrxNoiseFilter(_orig_stderr)
+try:
+    sys.__stdout__ = sys.stdout
+    sys.__stderr__ = sys.stderr
+except (AttributeError, TypeError):
+    pass
+
+
+# --- 일시 stderr 차단 컨텍스트 (네트워크 호출 시 잠깐 끄고 싶을 때) ---
+@_contextlib.contextmanager
+def _silence_stderr():
+    """fd 2까지 일시 차단 (필터로 안 잡히는 OS-level write 대비)."""
+    import os as _os
+    import sys as _sys
+    old_stderr = _sys.stderr
+    old_under = _sys.__stderr__
+    sink = _io.StringIO()
+    _sys.stderr = sink
+    _sys.__stderr__ = sink
+    old_fd = _os.dup(2)
+    devnull_fd = _os.open(_os.devnull, _os.O_WRONLY)
+    _os.dup2(devnull_fd, 2)
+    try:
+        yield
+    finally:
+        _sys.stderr = old_stderr
+        _sys.__stderr__ = old_under
+        _os.dup2(old_fd, 2)
+        _os.close(old_fd)
+        _os.close(devnull_fd)
+
 
 import duckdb
 import pandas as pd
@@ -44,7 +112,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 import finplot as fplt
-from pykrx import stock
+# pykrx는 import 시점에도 KRX_ID/PW 미설정 메시지를 print하므로 silence 안에서 import
+with _silence_stderr():
+    from pykrx import stock
 
 # --- 한국 시장 관례: 상승=빨강, 하락=파랑 (캔들·거래량 색상) -------------
 fplt.candle_bull_color = "#dd2200"        # 상승봉 외곽선
@@ -419,31 +489,7 @@ import urllib.error
 import urllib.parse as _urlparse
 
 
-@_contextlib.contextmanager
-def _silence_stderr():
-    """pykrx 등이 sys.stderr / sys.__stderr__ / OS fd 2로 직접 출력하는
-    노이즈를 모두 일시 차단. pykrx는 sys.__stderr__에 직접 print하므로
-    sys.stderr만 바꿔서는 안 잡힘."""
-    import os as _os
-    import sys as _sys
-    old_stderr = _sys.stderr
-    old_under = _sys.__stderr__
-    sink = _io.StringIO()
-    # 1) 파이썬 레벨 두 군데 모두 sink로
-    _sys.stderr = sink
-    _sys.__stderr__ = sink
-    # 2) OS 레벨 fd 2 → /dev/null (직접 write(2, ...) 호출도 차단)
-    old_fd = _os.dup(2)
-    devnull_fd = _os.open(_os.devnull, _os.O_WRONLY)
-    _os.dup2(devnull_fd, 2)
-    try:
-        yield
-    finally:
-        _sys.stderr = old_stderr
-        _sys.__stderr__ = old_under
-        _os.dup2(old_fd, 2)
-        _os.close(old_fd)
-        _os.close(devnull_fd)
+# _silence_stderr는 파일 상단에서 pykrx import 전에 이미 정의됨
 
 KRX_API_BASE = "https://data-dbg.krx.co.kr/svc/apis"
 
