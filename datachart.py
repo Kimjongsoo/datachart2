@@ -1518,17 +1518,24 @@ def fetch_minute_yahoo(code: str, interval: str = "5m", days: int = 60) -> pd.Da
     return pd.DataFrame()
 
 
-def resample_to_5min(df_1min: pd.DataFrame) -> pd.DataFrame:
-    """1분봉 → 5분봉. close-only 데이터에서도 OHL 합성. volume은 누적이라 차분."""
+def resample_to_5min(df_1min: pd.DataFrame,
+                     cumulative_volume: bool = False) -> pd.DataFrame:
+    """1분봉 → 5분봉. label/closed='left'로 라벨링 (한국 HTS 관례).
+
+    - 5분 윈도우 [13:30, 13:35) 의 데이터는 '13:30' 봉으로 라벨링 (시작점 기준)
+    - cumulative_volume=True: 입력 volume이 분 누적 (Naver) → diff로 분당 거래량 추출
+    - cumulative_volume=False: 입력 volume이 이미 분당 (KIS, yfinance) → 그대로 sum
+    """
     if df_1min.empty:
         return df_1min
     d = df_1min.copy()
     d["datetime"] = pd.to_datetime(d["datetime"])
     d = d.set_index("datetime").sort_index()
-    # 누적 volume → 1분 거래량 차분 (장 시작 첫 봉은 그대로)
-    delta_vol = d["volume"].diff().fillna(d["volume"]).clip(lower=0)
-    d = d.assign(_vol=delta_vol)
-    agg = d.resample("5min", label="right", closed="right").agg({
+    if cumulative_volume:
+        d["_vol"] = d["volume"].diff().fillna(d["volume"]).clip(lower=0)
+    else:
+        d["_vol"] = d["volume"]
+    agg = d.resample("5min", label="left", closed="left").agg({
         "open": "first",
         "high": "max",
         "low": "min",
@@ -2434,7 +2441,8 @@ class DataChartWindow(QMainWindow):
                     if df_1min.empty:
                         self.status.setText("5분봉 데이터 없음")
                         return
-                    d_hist = resample_to_5min(df_1min)
+                    # Naver는 누적 거래량으로 옴 → diff 적용
+                    d_hist = resample_to_5min(df_1min, cumulative_volume=True)
                     src = "Naver 합성"
                 # KIS 오늘 1분봉으로 yfinance 지연 갭(~15분) 보강
                 ak_kis, _, _ = _kis_resolve()
@@ -2443,7 +2451,8 @@ class DataChartWindow(QMainWindow):
                     QApplication.processEvents()
                     kis_1min = fetch_minute_kis_today(code, max_bars=120)
                     if not kis_1min.empty:
-                        kis_5m = resample_to_5min(kis_1min)
+                        # KIS cntg_vol은 분당 거래량 → diff 불필요 (cumulative_volume=False)
+                        kis_5m = resample_to_5min(kis_1min, cumulative_volume=False)
                         if not kis_5m.empty:
                             d_hist["datetime"] = pd.to_datetime(d_hist["datetime"])
                             kis_5m["datetime"] = pd.to_datetime(kis_5m["datetime"])
