@@ -2437,7 +2437,9 @@ class DataChartWindow(QMainWindow):
         self.vol_ax.reset()
         tf = self.tf_combo.currentData()
 
-        # 일/주봉 모드에선 KIS 라이브 봉을 오늘 봉으로 합성 추가
+        # 일/주봉 모드에 오늘 봉 합성:
+        # 1순위 - WS로 누적된 _live_bar (장중)
+        # 2순위 - KIS REST inquire-price 스냅샷 (장 외 시간에도 오늘 OHLC 사용)
         live_today = None
         if self._live_bar and self._live_bar.get("tf") in ("day", "week"):
             lb = self._live_bar
@@ -2449,6 +2451,22 @@ class DataChartWindow(QMainWindow):
                 "close": lb["close"],
                 "volume": int(lb["volume"]),
             }])
+        else:
+            # WS 비활성(장 외 시간) → KIS 스냅샷으로 오늘 봉 합성
+            ak_t, _, _ = _kis_resolve()
+            if ak_t:
+                snap = kis_current_price(code)
+                if snap and snap.get("price"):
+                    today_naive = pd.Timestamp.now().normalize()
+                    p = float(snap["price"])
+                    live_today = pd.DataFrame([{
+                        "date": today_naive,
+                        "open":  float(snap.get("open") or p),
+                        "high":  float(snap.get("high") or p),
+                        "low":   float(snap.get("low") or p),
+                        "close": p,
+                        "volume": int(snap.get("volume") or 0),
+                    }])
 
         if tf == "week":
             d = resample_to_weekly(daily_df)
