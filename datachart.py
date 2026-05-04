@@ -1575,17 +1575,21 @@ class DataChartWindow(QMainWindow):
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
 
-        # 상단 컨트롤 바
+        # 상단 컨트롤 바 — 스텔스 모드에서 숨길 위젯들은 self._hideables에 모음
         bar = QHBoxLayout()
-        bar.addWidget(QLabel("종목코드"))
+        self._hideables: list[QWidget] = []
+        self._lbl_code = QLabel("종목코드")
+        bar.addWidget(self._lbl_code)
+        self._hideables.append(self._lbl_code)
         self.code_input = QLineEdit(DEFAULT_CODE)
         self.code_input.setMaximumWidth(100)
         self.code_input.returnPressed.connect(self.load_all)
         bar.addWidget(self.code_input)
 
-        load_btn = QPushButton("불러오기")
-        load_btn.clicked.connect(self.load_all)
-        bar.addWidget(load_btn)
+        self._load_btn = QPushButton("불러오기")
+        self._load_btn.clicked.connect(self.load_all)
+        bar.addWidget(self._load_btn)
+        self._hideables.append(self._load_btn)
 
         # 종목명 표시
         self.name_label = QLabel("-")
@@ -1600,22 +1604,28 @@ class DataChartWindow(QMainWindow):
         )
         bar.addWidget(self.price_label)
 
-        bar.addWidget(QLabel("주기"))
+        self._lbl_tf = QLabel("주기")
+        bar.addWidget(self._lbl_tf)
+        self._hideables.append(self._lbl_tf)
         self.tf_combo = QComboBox()
         self.tf_combo.addItem("일봉", "day")
         self.tf_combo.addItem("주봉", "week")
         self.tf_combo.addItem("5분봉", "min5")
         self.tf_combo.currentIndexChanged.connect(self._on_timeframe_changed)
         bar.addWidget(self.tf_combo)
+        self._hideables.append(self.tf_combo)
 
         # 일목균형표 토글
         self.cb_ichimoku = QCheckBox("일목균형표")
         self.cb_ichimoku.setToolTip("전환선(9)·기준선(26)·선행스팬1·2(26봉 forward)·후행스팬(26봉 backward)")
         self.cb_ichimoku.stateChanged.connect(self._on_timeframe_changed)
         bar.addWidget(self.cb_ichimoku)
+        self._hideables.append(self.cb_ichimoku)
 
         # 지수 비교 (KRX OpenAPI 승인된 서비스 사용)
-        bar.addWidget(QLabel("비교"))
+        self._lbl_cmp = QLabel("비교")
+        bar.addWidget(self._lbl_cmp)
+        self._hideables.append(self._lbl_cmp)
         self.cmp_combo = QComboBox()
         self.cmp_combo.addItem("없음", None)
         self.cmp_combo.addItem("코스피", "코스피")
@@ -1627,11 +1637,24 @@ class DataChartWindow(QMainWindow):
         self.cmp_combo.setToolTip("종목 가격과 지수를 시작일 기준 동일점으로 정규화해 같은 축에 오버레이")
         self.cmp_combo.currentIndexChanged.connect(self._on_timeframe_changed)
         bar.addWidget(self.cmp_combo)
+        self._hideables.append(self.cmp_combo)
 
         self.status = QLabel("준비")
         bar.addWidget(self.status)
+        self._hideables.append(self.status)
         bar.addStretch()
+
+        # 스텔스 모드 토글 (회사에서 몰래 보기용)
+        self.btn_stealth = QPushButton("📕")
+        self.btn_stealth.setCheckable(True)
+        self.btn_stealth.setToolTip("스텔스 모드: 종목명+가격만 흑색 작게 (다시 누르면 복원)")
+        self.btn_stealth.setMaximumWidth(32)
+        self.btn_stealth.clicked.connect(self._toggle_stealth)
+        bar.addWidget(self.btn_stealth)
+
         root.addLayout(bar)
+        self._stealth_on = False
+        self._normal_geometry = None
 
         # 탭 구성
         self.tabs = QTabWidget()
@@ -1792,6 +1815,66 @@ class DataChartWindow(QMainWindow):
         # day (default)
         return n.replace(hour=0, minute=0, second=0, microsecond=0)
 
+    def _toggle_stealth(self) -> None:
+        """스텔스 모드: 차트/탭/색상 다 숨기고 종목명+가격만 작은 흑색으로."""
+        self._stealth_on = self.btn_stealth.isChecked()
+        if self._stealth_on:
+            self._normal_geometry = self.saveGeometry()
+            for w in self._hideables:
+                w.hide()
+            self.tabs.hide()
+            # 종목코드 입력란을 작게
+            self.code_input.setMaximumWidth(60)
+            self.code_input.setStyleSheet("font-size: 11px; padding: 1px;")
+            # 종목명·가격을 작은 흑색
+            self.name_label.setStyleSheet(
+                "font-size: 11px; padding: 0 4px; color: #333; font-weight: normal;"
+            )
+            self.price_label.setStyleSheet(
+                "font-size: 11px; padding: 1px 4px; color: #333; "
+                "background-color: transparent; font-weight: normal;"
+            )
+            self.btn_stealth.setText("📖")  # 스텔스 ON 표시
+            self.setWindowTitle("Memo")
+            # 작은 창
+            self.resize(360, 36)
+            # 색 캐시 무효화 (다음 라벨 갱신 때 흑색 유지)
+            self._last_label_color = "stealth"
+        else:
+            for w in self._hideables:
+                w.show()
+            self.tabs.show()
+            self.code_input.setMaximumWidth(100)
+            self.code_input.setStyleSheet("")
+            self.name_label.setStyleSheet(
+                "font-weight: bold; padding: 0 12px; color: #2266cc;"
+            )
+            self.price_label.setStyleSheet(
+                "font-size: 18px; font-weight: bold; padding: 2px 10px; "
+                "background-color: #f5f5f5; border-radius: 4px;"
+            )
+            self.btn_stealth.setText("📕")
+            self.setWindowTitle("DataChart v2 — 종합 데이터 차트")
+            if self._normal_geometry:
+                self.restoreGeometry(self._normal_geometry)
+            self._last_label_color = None  # 다음 갱신 때 색상 재적용
+
+    def _update_price_label(self, price: float, change_pct: float, is_live: bool = False) -> None:
+        """가격 라벨 갱신. 스텔스 모드면 흑색·간략, 평소엔 빨강/파랑+태그."""
+        if self._stealth_on:
+            self.price_label.setText(f"{price:,.0f}")
+            return
+        color = "#cc0000" if change_pct >= 0 else "#0066cc"
+        tag = "  ⚡LIVE" if is_live else ""
+        self.price_label.setText(f"{price:,.0f}원  {change_pct:+.2f}%{tag}")
+        if color != self._last_label_color:
+            bg = "#fff8e1" if is_live else "#f5f5f5"
+            self.price_label.setStyleSheet(
+                f"font-size: 18px; font-weight: bold; padding: 2px 10px; "
+                f"color: {color}; background-color: {bg}; border-radius: 4px;"
+            )
+            self._last_label_color = color
+
     def _on_realtime_tick(self, snap: dict) -> None:
         """KIS WebSocket 체결 push 핸들러.
         - 가격 라벨: 매 틱 즉시 갱신 (가벼움, 가장 즉각적인 시각 반응)
@@ -1805,15 +1888,8 @@ class DataChartWindow(QMainWindow):
         except (KeyError, ValueError, TypeError):
             return
 
-        # 가격 라벨 — 매 틱 갱신 (텍스트만, 색 바뀔 때만 setStyleSheet)
-        color = "#cc0000" if change_pct >= 0 else "#0066cc"
-        self.price_label.setText(f"{price:,.0f}원  {change_pct:+.2f}%  ⚡LIVE")
-        if color != self._last_label_color:
-            self.price_label.setStyleSheet(
-                f"font-size: 18px; font-weight: bold; padding: 2px 10px; "
-                f"color: {color}; background-color: #fff8e1; border-radius: 4px;"
-            )
-            self._last_label_color = color
+        # 가격 라벨 — 매 틱 갱신 (스텔스 모드면 흑색 간략 표시)
+        self._update_price_label(price, change_pct, is_live=True)
 
         # 라이브 봉 누적 (모든 주기 지원)
         tf = self.tf_combo.currentData()
@@ -1878,12 +1954,7 @@ class DataChartWindow(QMainWindow):
         try:
             price = float(snap["price"])
             change_pct = float(snap.get("change_rate") or 0.0)
-            color = "#cc0000" if change_pct >= 0 else "#0066cc"
-            self.price_label.setText(f"{price:,.0f}원  {change_pct:+.2f}%  🔴LIVE")
-            self.price_label.setStyleSheet(
-                f"font-size: 18px; font-weight: bold; padding: 2px 10px; "
-                f"color: {color}; background-color: #f5f5f5; border-radius: 4px;"
-            )
+            self._update_price_label(price, change_pct, is_live=True)
         except Exception:
             pass
 
@@ -2141,12 +2212,7 @@ class DataChartWindow(QMainWindow):
             hline = pg.InfiniteLine(pos=display_price, angle=0,
                                     pen=pg.mkPen(box_color, width=1, style=Qt.DashLine))
             self.price_ax.addItem(hline)
-            tag = " 🔴LIVE" if is_live else ""
-            self.price_label.setText(f"{display_price:,.0f}원  {change_pct:+.2f}%{tag}")
-            self.price_label.setStyleSheet(
-                f"font-size: 18px; font-weight: bold; padding: 2px 10px; "
-                f"color: {box_color}; background-color: #f5f5f5; border-radius: 4px;"
-            )
+            self._update_price_label(display_price, change_pct, is_live=is_live)
         except Exception:
             pass
 
