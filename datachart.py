@@ -271,7 +271,8 @@ def fetch_ohlcv(code: str, days: int = DEFAULT_DAYS, progress_cb=None) -> pd.Dat
         if cached is not None:
             return cached.drop(columns=["code"]).reset_index(drop=True)
 
-        df = stock.get_market_ohlcv(start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), code)
+        with _silence_stderr():
+            df = stock.get_market_ohlcv(start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), code)
         if df.empty:
             raise ValueError(f"종목 {code} OHLCV 데이터 없음")
         df = df.reset_index()
@@ -295,9 +296,10 @@ def fetch_investor(code: str, days: int = DEFAULT_DAYS) -> pd.DataFrame:
 
         # 투자자별 순매수 거래대금 (원). KRX OpenAPI 인증 필요 → 실패 시 빈 DataFrame
         try:
-            df = stock.get_market_trading_value_by_date(
-                start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), code
-            )
+            with _silence_stderr():
+                df = stock.get_market_trading_value_by_date(
+                    start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), code
+                )
         except Exception:
             return pd.DataFrame()
         if df is None or df.empty:
@@ -326,7 +328,8 @@ def fetch_fundamental(code: str, days: int = DEFAULT_DAYS) -> pd.DataFrame:
             return cached.drop(columns=["code"]).reset_index(drop=True)
 
         try:
-            df = stock.get_market_fundamental(start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), code)
+            with _silence_stderr():
+                df = stock.get_market_fundamental(start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), code)
         except Exception:
             return pd.DataFrame()
         if df is None or df.empty:
@@ -352,7 +355,8 @@ def fetch_marketcap(code: str, days: int = DEFAULT_DAYS) -> pd.DataFrame:
             return cached.drop(columns=["code"]).reset_index(drop=True)
 
         try:
-            df = stock.get_market_cap(start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), code)
+            with _silence_stderr():
+                df = stock.get_market_cap(start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), code)
         except Exception:
             return pd.DataFrame()
         if df is None or df.empty:
@@ -380,9 +384,10 @@ def fetch_foreign_rate(code: str, days: int = DEFAULT_DAYS) -> pd.DataFrame:
             return cached.drop(columns=["code"]).reset_index(drop=True)
 
         try:
-            df = stock.get_exhaustion_rates_of_foreign_investment(
-                start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), code
-            )
+            with _silence_stderr():
+                df = stock.get_exhaustion_rates_of_foreign_investment(
+                    start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), code
+                )
         except Exception:
             return pd.DataFrame()
         if df is None or df.empty:
@@ -406,9 +411,23 @@ def fetch_foreign_rate(code: str, days: int = DEFAULT_DAYS) -> pd.DataFrame:
 
 
 # --- KRX OpenAPI (openapi.krx.co.kr) 클라이언트 ---------------------------
+import contextlib as _contextlib
+import io as _io
 import json as _json
 import urllib.error
 import urllib.parse as _urlparse
+
+
+@_contextlib.contextmanager
+def _silence_stderr():
+    """pykrx 등 라이브러리가 stderr에 직접 print하는 노이즈 일시 차단."""
+    import sys as _sys
+    old = _sys.stderr
+    _sys.stderr = _io.StringIO()
+    try:
+        yield
+    finally:
+        _sys.stderr = old
 
 KRX_API_BASE = "https://data-dbg.krx.co.kr/svc/apis"
 
@@ -1279,7 +1298,8 @@ def fetch_naver_investor_flow(code: str, pages: int = 3) -> pd.DataFrame:
 # --- 종목명 조회 -----------------------------------------------------------
 def get_name(code: str) -> str:
     try:
-        n = stock.get_market_ticker_name(code)
+        with _silence_stderr():
+            n = stock.get_market_ticker_name(code)
         if n:
             return n
     except Exception:
@@ -1519,6 +1539,11 @@ class DataChartWindow(QMainWindow):
         self._min5_history = None  # 확정된 과거 5분봉 (yfinance 결과)
         self._last_kis_price = None
 
+        # 가격 라벨 전용 폴링 (5분봉 아닌 모드에서도 가격 라벨만 실시간 갱신)
+        self._price_label_timer = QTimer(self)
+        self._price_label_timer.setInterval(2000)  # 2초 간격 (가격만 표시)
+        self._price_label_timer.timeout.connect(self._poll_price_label_only)
+
         # 첫 로드
         self.load_all()
 
@@ -1546,13 +1571,23 @@ class DataChartWindow(QMainWindow):
         fplt.refresh()
         # 5분봉 모드 + KIS 키 등록 시 1초 폴링 시작
         ak3, _, _ = _kis_resolve()
-        if self.tf_combo.currentData() == "min5" and ak3:
+        is_min5 = self.tf_combo.currentData() == "min5"
+        if is_min5 and ak3:
             if not self._rt_timer.isActive():
                 self._rt_timer.start()
+            if self._price_label_timer.isActive():
+                self._price_label_timer.stop()  # 5분봉 모드에선 라이브 봉 폴링이 라벨도 갱신
         else:
             if self._rt_timer.isActive():
                 self._rt_timer.stop()
             self._live_bar = None
+            # 비-5분봉 모드 + KIS 키 있고 정규장이면 가격 라벨만 폴링
+            if ak3 and self._is_market_open():
+                if not self._price_label_timer.isActive():
+                    self._price_label_timer.start()
+            else:
+                if self._price_label_timer.isActive():
+                    self._price_label_timer.stop()
 
     @staticmethod
     def _is_market_open() -> bool:
@@ -1569,6 +1604,29 @@ class DataChartWindow(QMainWindow):
         n = now or _dt.now()
         return n.replace(second=0, microsecond=0,
                          minute=(n.minute // 5) * 5)
+
+    def _poll_price_label_only(self) -> None:
+        """KIS 현재가만 가져와 상단 가격 라벨 실시간 갱신 (차트는 안 건드림).
+        5분봉이 아닐 때도 실시간 가격을 보여주기 위함."""
+        if not self._is_market_open():
+            return
+        code = self.code_input.text().strip()
+        if not (code.isdigit() and len(code) == 6):
+            return
+        snap = kis_current_price(code)
+        if not snap or not snap.get("price"):
+            return
+        try:
+            price = float(snap["price"])
+            change_pct = float(snap.get("change_rate") or 0.0)
+            color = "#cc0000" if change_pct >= 0 else "#0066cc"
+            self.price_label.setText(f"{price:,.0f}원  {change_pct:+.2f}%  🔴LIVE")
+            self.price_label.setStyleSheet(
+                f"font-size: 18px; font-weight: bold; padding: 2px 10px; "
+                f"color: {color}; background-color: #f5f5f5; border-radius: 4px;"
+            )
+        except Exception:
+            pass
 
     def _poll_live_tick(self) -> None:
         """1초마다 KIS 현재가 조회 → 진행 중인 5분봉 OHLC 누적 → 차트 업데이트."""
@@ -1601,6 +1659,17 @@ class DataChartWindow(QMainWindow):
             lb["close"]  = price
             lb["volume"] = max(0, cum_vol - lb["volume_at_start"])
         self._last_kis_price = price
+        # 가격 라벨 실시간 갱신 (1초마다)
+        try:
+            change_pct = float(snap.get("change_rate") or 0.0)
+            color = "#cc0000" if change_pct >= 0 else "#0066cc"
+            self.price_label.setText(f"{price:,.0f}원  {change_pct:+.2f}%  🔴LIVE")
+            self.price_label.setStyleSheet(
+                f"font-size: 18px; font-weight: bold; padding: 2px 10px; "
+                f"color: {color}; background-color: #f5f5f5; border-radius: 4px;"
+            )
+        except Exception:
+            pass
         # 라이브 봉 포함해 차트 다시 그리기
         self._render_min5_with_live()
         fplt.refresh()
@@ -1698,12 +1767,20 @@ class DataChartWindow(QMainWindow):
             f"{name}({code})  ·  {len(ohlcv)}봉  ·  종가 {last_close:,.0f}원{warn}{krx_info}{min_info}{kis_info}"
         )
 
-        # 5분봉 + KIS 키 등록 + 정규장 시간이면 자동 LIVE 폴링 시작
+        # 폴링 시작 결정 (정규장 시간 + KIS 키 있을 때)
         ak2, _, _ = _kis_resolve()
-        if (self.tf_combo.currentData() == "min5"
-                and ak2 and self._is_market_open()):
-            if not self._rt_timer.isActive():
-                self._rt_timer.start()
+        is_min5 = self.tf_combo.currentData() == "min5"
+        if ak2 and self._is_market_open():
+            if is_min5:
+                if not self._rt_timer.isActive():
+                    self._rt_timer.start()
+                if self._price_label_timer.isActive():
+                    self._price_label_timer.stop()
+            else:
+                if self._rt_timer.isActive():
+                    self._rt_timer.stop()
+                if not self._price_label_timer.isActive():
+                    self._price_label_timer.start()
         fplt.refresh()
 
     # --- 렌더러 ---------------------------------------------------------
@@ -1754,20 +1831,31 @@ class DataChartWindow(QMainWindow):
                   legend=f"MA{ma_long}", color="#ff9933")
         fplt.volume_ocv(d[["open", "close", "volume"]], ax=self.vol_ax)
 
-        # 우측 현재가 박스 (anchor=(1,0.5)이라 텍스트가 마지막 봉 왼쪽으로 그려져 화면 안)
+        # 현재가 라벨 + 차트 가로 점선
+        # KIS 키 있으면 실시간 KIS 현재가, 없으면 OHLCV 마지막 종가 (지연)
         try:
             import pyqtgraph as pg
             last_close = float(d["close"].iloc[-1])
             prev_close = float(d["close"].iloc[-2]) if len(d) > 1 else last_close
-            change = last_close - prev_close
-            change_pct = (change / prev_close * 100) if prev_close else 0.0
-            box_color = "#cc0000" if change >= 0 else "#0066cc"
-            # 가로 점선
-            hline = pg.InfiniteLine(pos=last_close, angle=0,
+
+            display_price = last_close
+            change_pct = ((last_close - prev_close) / prev_close * 100) if prev_close else 0.0
+            is_live = False
+            ak, _, _ = _kis_resolve()
+            if ak:
+                snap = kis_current_price(code)
+                if snap and snap.get("price"):
+                    display_price = float(snap["price"])
+                    if snap.get("change_rate") is not None:
+                        change_pct = float(snap["change_rate"])
+                    is_live = True
+
+            box_color = "#cc0000" if change_pct >= 0 else "#0066cc"
+            hline = pg.InfiniteLine(pos=display_price, angle=0,
                                     pen=pg.mkPen(box_color, width=1, style=Qt.DashLine))
             self.price_ax.addItem(hline)
-            # 상단 컨트롤 바의 큰 가격 라벨 갱신 (안정적 표시)
-            self.price_label.setText(f"{last_close:,.0f}원  {change_pct:+.2f}%")
+            tag = " 🔴LIVE" if is_live else ""
+            self.price_label.setText(f"{display_price:,.0f}원  {change_pct:+.2f}%{tag}")
             self.price_label.setStyleSheet(
                 f"font-size: 18px; font-weight: bold; padding: 2px 10px; "
                 f"color: {box_color}; background-color: #f5f5f5; border-radius: 4px;"
