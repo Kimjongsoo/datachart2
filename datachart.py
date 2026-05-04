@@ -1844,6 +1844,7 @@ class DataChartWindow(QMainWindow):
         self.price_ax = price_w[0] if isinstance(price_w, (list, tuple)) else price_w
         self.vol_ax = vol_w[0] if isinstance(vol_w, (list, tuple)) else vol_w
         self.vol_ax.setXLink(self.price_ax)  # X축 동기화
+        self._format_y_axis_kmb(self.vol_ax)  # 거래량 Y축을 K/M 약어로
         self.axs_price = [self.price_ax, self.vol_ax]
         chart_split = QSplitter(Qt.Vertical)
         chart_split.setChildrenCollapsible(False)
@@ -1860,6 +1861,7 @@ class DataChartWindow(QMainWindow):
         ))
         self.flow_ax = flow_axes[0]
         self.axs_flow = [self.flow_ax]
+        self._format_y_axis_kmb(self.flow_ax)
         self.tabs.addTab(_wrap_ax(self.flow_ax), "수급")
 
         # 탭 3: 펀더멘털 (요약 라벨 + PER/PBR 추이 차트)
@@ -1895,6 +1897,7 @@ class DataChartWindow(QMainWindow):
         self.fund_revenue_ax = rev_w[0] if isinstance(rev_w, (list, tuple)) else rev_w
         self.fund_ax2.setXLink(self.fund_ax)
         self.fund_revenue_ax.setXLink(self.fund_ax)
+        self._format_y_axis_kmb(self.fund_revenue_ax)  # 매출액 K/M 표기
         self.axs_fund = [self.fund_ax, self.fund_ax2, self.fund_revenue_ax]
         fund_split = QSplitter(Qt.Vertical)
         fund_split.setChildrenCollapsible(False)
@@ -2330,6 +2333,31 @@ class DataChartWindow(QMainWindow):
                 self._price_label_timer.stop()
         fplt.refresh()
 
+    @staticmethod
+    def _format_y_axis_kmb(ax) -> None:
+        """Y축 tick 라벨을 K/M/B 약어 형식으로 변환.
+        예: 100,000 → 100K, 1,500,000 → 1.5M, 2,000,000,000 → 2.0B"""
+        def tick_strings(values, scale, spacing):
+            out = []
+            for v in values:
+                absv = abs(v)
+                if absv >= 1_000_000_000:
+                    out.append(f"{v / 1e9:.1f}B")
+                elif absv >= 1_000_000:
+                    out.append(f"{v / 1e6:.1f}M")
+                elif absv >= 1_000:
+                    out.append(f"{v / 1e3:.0f}K")
+                else:
+                    out.append(f"{v:.0f}")
+            return out
+        for axis_name in ("right", "left", "bottom", "top"):
+            try:
+                axis = ax.getAxis(axis_name)
+                if axis is not None:
+                    axis.tickStrings = tick_strings
+            except Exception:
+                pass
+
     # --- 차트 공통 그리기 헬퍼 -----------------------------------------
     # 4종 이동평균 사양: (기간, 색, 두께) — 20만 강조, 나머지는 얇게
     _MA_SPECS = (
@@ -2340,16 +2368,14 @@ class DataChartWindow(QMainWindow):
     )
 
     def _draw_candle_volume_indicators(self, d: pd.DataFrame) -> None:
-        """캔들 + 4종 MA + 거래량(만주) + 일목균형표(옵션). 라벨 텍스트는 표시 안 함."""
+        """캔들 + 4종 MA + 거래량(raw, Y축에 K/M 포맷터) + 일목균형표(옵션)."""
         fplt.candlestick_ochl(d[["open", "close", "high", "low"]], ax=self.price_ax)
         for period, color, w in self._MA_SPECS:
             if len(d) >= period:
                 fplt.plot(d["close"].rolling(period).mean(),
                           ax=self.price_ax, color=color, width=w)
-        # 거래량 (만주 단위)
-        vol_d = d[["open", "close", "volume"]].copy()
-        vol_d["volume"] = (vol_d["volume"] / 10000).round().astype("int64")
-        fplt.volume_ocv(vol_d, ax=self.vol_ax)
+        # 거래량 raw 데이터 그대로 (Y축 라벨은 K/M으로 자동 포맷됨)
+        fplt.volume_ocv(d[["open", "close", "volume"]], ax=self.vol_ax)
         # 일목균형표 (옵션)
         if self.cb_ichimoku.isChecked():
             self._draw_ichimoku(d)
