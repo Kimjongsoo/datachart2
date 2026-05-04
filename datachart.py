@@ -1778,6 +1778,20 @@ class DataChartWindow(QMainWindow):
         return n.replace(second=0, microsecond=0,
                          minute=(n.minute // 5) * 5)
 
+    @staticmethod
+    def _bar_start_for_tf(tf: str, now: _dt | None = None) -> _dt:
+        """주기별 라이브 봉 시작 시각."""
+        n = now or _dt.now()
+        if tf == "min5":
+            return n.replace(second=0, microsecond=0,
+                             minute=(n.minute // 5) * 5)
+        if tf == "week":
+            # 이번 주 월요일 00:00 (W-FRI 기준이라 일요일 종가에 합쳐짐, 시각화엔 큰 차이 X)
+            monday = n - timedelta(days=n.weekday())
+            return monday.replace(hour=0, minute=0, second=0, microsecond=0)
+        # day (default)
+        return n.replace(hour=0, minute=0, second=0, microsecond=0)
+
     def _on_realtime_tick(self, snap: dict) -> None:
         """KIS WebSocket 체결 push 핸들러.
         - 가격 라벨: 매 틱 즉시 갱신 (가벼움, 가장 즉각적인 시각 반응)
@@ -1801,23 +1815,37 @@ class DataChartWindow(QMainWindow):
             )
             self._last_label_color = color
 
-        # 5분봉 모드면 라이브 봉 누적 (상태는 매 틱, 렌더는 throttle)
-        if self.tf_combo.currentData() != "min5":
-            return
-        bar_start = self._bar_start_5min()
+        # 라이브 봉 누적 (모든 주기 지원)
+        tf = self.tf_combo.currentData()
         cum_vol = snap.get("cum_volume") or 0
-        if self._live_bar is None or self._live_bar["start"] != bar_start:
+        bar_start = self._bar_start_for_tf(tf)
+        # KIS snap의 시가/고가/저가 우선 활용 (그 봉 안에서 발생한 진짜 OHL)
+        snap_open = float(snap.get("open") or price)
+        snap_high = float(snap.get("high") or price)
+        snap_low = float(snap.get("low") or price)
+        if (self._live_bar is None
+                or self._live_bar.get("tf") != tf
+                or self._live_bar.get("start") != bar_start):
             self._live_bar = {
+                "tf": tf,
                 "start": bar_start,
-                "open": price, "high": price, "low": price, "close": price,
-                "volume_at_start": cum_vol, "volume": 0,
+                "open": snap_open,
+                "high": max(snap_high, price),
+                "low": min(snap_low, price),
+                "close": price,
+                "volume_at_start": cum_vol if tf == "min5" else 0,
+                "volume": cum_vol if tf in ("day", "week") else 0,
             }
         else:
             lb = self._live_bar
-            lb["high"] = max(lb["high"], price)
-            lb["low"] = min(lb["low"], price)
+            lb["high"] = max(lb["high"], snap_high, price)
+            lb["low"] = min(lb["low"], snap_low, price)
             lb["close"] = price
-            lb["volume"] = max(0, cum_vol - lb["volume_at_start"])
+            if tf == "min5":
+                lb["volume"] = max(0, cum_vol - lb["volume_at_start"])
+            else:
+                # 일/주봉은 누적 거래량 그대로 사용
+                lb["volume"] = cum_vol
         self._last_kis_price = price
 
         # 차트 렌더 throttle: 마지막 refresh로부터 200ms 이내면 skip
@@ -1825,7 +1853,12 @@ class DataChartWindow(QMainWindow):
         if now - self._last_chart_refresh < 0.2:
             return
         self._last_chart_refresh = now
-        self._render_min5_with_live()
+        if tf == "min5":
+            self._render_min5_with_live()
+        else:
+            # 일/주봉: 전체 _render_price 재호출 (live_today를 자동 합성)
+            if self._last_ohlcv is not None:
+                self._render_price(self._last_ohlcv, snap.get("code") or "")
         try:
             fplt.refresh()
         except Exception:
@@ -1928,7 +1961,9 @@ class DataChartWindow(QMainWindow):
                   legend="MA12", color="#3399ff")
         fplt.plot(merged["close"].rolling(60).mean(), ax=self.price_ax,
                   legend="MA60", color="#ff9933")
-        fplt.volume_ocv(merged[["open", "close", "volume"]], ax=self.vol_ax)
+        merged_vol = merged[["open", "close", "volume"]].copy()
+        merged_vol["volume"] = (merged_vol["volume"] / 10000).round().astype("int64")
+        fplt.volume_ocv(merged_vol, ax=self.vol_ax)
         # 상태바에 LIVE 표시
         lb = self._live_bar
         bar_t = lb["start"].strftime("%H:%M")
@@ -2019,8 +2054,24 @@ class DataChartWindow(QMainWindow):
         self.vol_ax.reset()
         tf = self.tf_combo.currentData()
 
+        # 일/주봉 모드에선 KIS 라이브 봉을 오늘 봉으로 합성 추가
+        live_today = None
+        if self._live_bar and self._live_bar.get("tf") in ("day", "week"):
+            lb = self._live_bar
+            live_today = pd.DataFrame([{
+                "date": pd.Timestamp(lb["start"]),
+                "open": lb["open"],
+                "high": lb["high"],
+                "low": lb["low"],
+                "close": lb["close"],
+                "volume": int(lb["volume"]),
+            }])
+
         if tf == "week":
             d = resample_to_weekly(daily_df)
+            if live_today is not None:
+                d = d[~(pd.to_datetime(d["date"]) == live_today["date"].iloc[0])]
+                d = pd.concat([d, live_today], ignore_index=True)
             time_col = "date"
             ma_short, ma_long = 4, 12  # 4주(약 1개월), 12주(약 3개월)
         elif tf == "min5":
@@ -2045,6 +2096,10 @@ class DataChartWindow(QMainWindow):
             self._min5_history = d.copy()
         else:  # day
             d = daily_df.copy()
+            d["date"] = pd.to_datetime(d["date"])
+            if live_today is not None:
+                d = d[d["date"] != live_today["date"].iloc[0]]
+                d = pd.concat([d, live_today], ignore_index=True)
             time_col = "date"
             ma_short, ma_long = 20, 60
 
@@ -2058,7 +2113,10 @@ class DataChartWindow(QMainWindow):
                   legend=f"MA{ma_short}", color="#3399ff")
         fplt.plot(d["close"].rolling(ma_long).mean(), ax=self.price_ax,
                   legend=f"MA{ma_long}", color="#ff9933")
-        fplt.volume_ocv(d[["open", "close", "volume"]], ax=self.vol_ax)
+        # 거래량을 만주 단위로 변환해서 6.0e+06 같은 과학적 표기 제거
+        d_vol = d[["open", "close", "volume"]].copy()
+        d_vol["volume"] = (d_vol["volume"] / 10000).round().astype("int64")
+        fplt.volume_ocv(d_vol, ax=self.vol_ax)
 
         # 현재가 라벨 + 차트 가로 점선
         # KIS 키 있으면 실시간 KIS 현재가, 없으면 OHLCV 마지막 종가 (지연)
