@@ -2340,28 +2340,48 @@ class DataChartWindow(QMainWindow):
 
     @staticmethod
     def _format_y_axis_kmb(ax, label_text: str = "") -> None:
-        """Y축에 단위 라벨만 설정. tick은 pyqtgraph 기본 + autoSIPrefix가 알아서 K/M 처리.
-        '거래량 (주)' 같은 라벨을 'text=거래량, units=주'로 분해해서 setLabel.
-        autoSIPrefix가 ON이면 axis 라벨이 자동으로 '(M주)' '(k주)'로 prefix 추가됨.
+        """Y축 tick을 항상 raw 값 기반 K/M으로 명시. autoSIPrefix 끄고 직접 포맷.
+        - 1,000 단위 ↑: K (예: 5K = 5,000주)
+        - 1,000,000 단위 ↑: M (예: 1.5M = 150만주)
+        - 그 미만: 천단위 콤마 (300, 1,500)
+        라벨은 단순 텍스트("거래량 (주)") — autoSIPrefix가 prefix 못 붙이게.
         """
-        import re
-        m = re.match(r"^(.*?)\s*\(([^)]+)\)\s*$", label_text or "")
-        if m:
-            text = m.group(1).strip()
-            units = m.group(2).strip()
-        else:
-            text = label_text
-            units = ""
+        def tick_strings(values, scale, spacing):
+            out = []
+            for v in values:
+                absv = abs(v)
+                if absv >= 1e9:
+                    out.append(f"{v / 1e9:.1f}B")
+                elif absv >= 1e6:
+                    out.append(f"{v / 1e6:.1f}M")
+                elif absv >= 1e3:
+                    out.append(f"{v / 1e3:.0f}K")
+                elif absv >= 1:
+                    out.append(f"{int(v):,}")
+                elif absv > 0:
+                    # 매우 작거나 fractional 값 (있어선 안 되지만 fail-safe)
+                    out.append(f"{v:.2g}")
+                else:
+                    out.append("0")
+            return out
         for axis_name in ("right", "left"):
             try:
                 axis = ax.getAxis(axis_name)
                 if axis is None:
                     continue
-                axis.enableAutoSIPrefix(True)
-                if units:
-                    axis.setLabel(text=text, units=units)
-                elif text:
-                    axis.setLabel(text=text)
+                # 1) autoSIPrefix 끄기 — pyqtgraph가 자체 scale 적용 못 하게
+                try:
+                    axis.enableAutoSIPrefix(False)
+                except Exception:
+                    pass
+                # 2) tickStrings monkey-patch
+                axis.tickStrings = tick_strings
+                # 3) 단순 텍스트 라벨 (units= 안 줘서 prefix 못 붙게)
+                if label_text:
+                    try:
+                        axis.setLabel(text=label_text)
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
