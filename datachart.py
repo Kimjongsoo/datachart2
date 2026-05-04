@@ -2050,52 +2050,29 @@ class DataChartWindow(QMainWindow):
         fplt.refresh()
 
     def _render_min5_with_live(self) -> None:
-        """5분봉 history + 진행 중인 라이브 봉을 결합해 차트 갱신."""
-        if self._min5_history is None or self._min5_history.empty or not self._live_bar:
+        """5분봉 라이브 갱신 — _render_price를 호출해 캐시된 history + 라이브 봉 + 일목 + 비교 모두 그림."""
+        if self._last_ohlcv is None:
             return
-        history = self._min5_history.copy()
-        # 라이브 봉이 history 마지막 시간보다 새 봉인 경우만 append
-        live_row = pd.DataFrame([{
-            "datetime": self._live_bar["start"],
-            "open":  self._live_bar["open"],
-            "high":  self._live_bar["high"],
-            "low":   self._live_bar["low"],
-            "close": self._live_bar["close"],
-            "volume": int(self._live_bar["volume"]),
-        }])
-        # 같은 봉 시간대가 history에 이미 있으면 교체, 없으면 append
-        history["datetime"] = pd.to_datetime(history["datetime"])
-        live_row["datetime"] = pd.to_datetime(live_row["datetime"])
-        history = history[history["datetime"] != live_row["datetime"].iloc[0]]
-        merged = pd.concat([history, live_row], ignore_index=True)
-        merged = merged.set_index("datetime").sort_index()
-
-        self.price_ax.reset()
-        self.vol_ax.reset()
-        fplt.candlestick_ochl(merged[["open", "close", "high", "low"]], ax=self.price_ax)
-        fplt.plot(merged["close"].rolling(12).mean(), ax=self.price_ax,
-                  legend="MA12", color="#3399ff")
-        fplt.plot(merged["close"].rolling(60).mean(), ax=self.price_ax,
-                  legend="MA60", color="#ff9933")
-        merged_vol = merged[["open", "close", "volume"]].copy()
-        merged_vol["volume"] = (merged_vol["volume"] / 10000).round().astype("int64")
-        fplt.volume_ocv(merged_vol, ax=self.vol_ax)
-        # 상태바에 LIVE 표시
+        # _render_price의 5분봉 분기에서 self._min5_history 캐시 + self._live_bar 합성을 처리
+        self._render_price(self._last_ohlcv, self.code_input.text().strip())
+        # 상태바에도 라이브 봉 정보 표시
         lb = self._live_bar
-        bar_t = lb["start"].strftime("%H:%M")
-        self.status.setText(
-            f"🔴 LIVE  {bar_t} 봉  O={lb['open']:,.0f} H={lb['high']:,.0f} "
-            f"L={lb['low']:,.0f} C={lb['close']:,.0f} V={lb['volume']:,}"
-        )
+        if lb and lb.get("tf") == "min5":
+            bar_t = lb["start"].strftime("%H:%M")
+            self.status.setText(
+                f"🔴 LIVE  {bar_t} 봉  O={lb['open']:,.0f} H={lb['high']:,.0f} "
+                f"L={lb['low']:,.0f} C={lb['close']:,.0f} V={lb['volume']:,}"
+            )
 
     def load_all(self) -> None:
         code = self.code_input.text().strip()
         if not (code.isdigit() and len(code) == 6):
             self.status.setText("6자리 종목코드를 입력하세요")
             return
-        # 종목/주기 변경 시 진행 중이던 라이브 봉 초기화
+        # 종목/주기 변경 시 진행 중이던 라이브 봉 + 5분봉 캐시 초기화
         self._live_bar = None
         self._last_kis_price = None
+        self._min5_history = None
 
         name = get_name(code)
         self.name_label.setText(f"📊 {name}")
@@ -2163,6 +2140,90 @@ class DataChartWindow(QMainWindow):
                 self._price_label_timer.stop()
         fplt.refresh()
 
+    # --- 차트 공통 그리기 헬퍼 -----------------------------------------
+    # 4종 이동평균 사양: (기간, 색)
+    _MA_SPECS = (
+        (5,   "#2e8b57"),  # 녹색 (sea green)
+        (20,  "#8b4513"),  # 갈색 (saddle brown)
+        (112, "#9933cc"),  # 보라
+        (224, "#cccc33"),  # 노랑(올리브)
+    )
+
+    def _draw_candle_volume_indicators(self, d: pd.DataFrame) -> None:
+        """캔들 + 4종 MA + 거래량(만주) + 일목균형표(옵션). price_ax/vol_ax 이미 reset 가정."""
+        fplt.candlestick_ochl(d[["open", "close", "high", "low"]], ax=self.price_ax)
+        for period, color in self._MA_SPECS:
+            if len(d) >= period:
+                fplt.plot(d["close"].rolling(period).mean(),
+                          ax=self.price_ax, legend=f"MA{period}",
+                          color=color, width=1)
+        # 거래량 (만주 단위)
+        vol_d = d[["open", "close", "volume"]].copy()
+        vol_d["volume"] = (vol_d["volume"] / 10000).round().astype("int64")
+        fplt.volume_ocv(vol_d, ax=self.vol_ax)
+        # 일목균형표 (옵션)
+        if self.cb_ichimoku.isChecked():
+            self._draw_ichimoku(d)
+
+    def _draw_ichimoku(self, d: pd.DataFrame) -> None:
+        """일목균형표 5선 + 구름대(Kumo) 색칠. 보조지표라 얇은 선."""
+        ichi = compute_ichimoku(d)
+        if ichi["tenkan"].dropna().empty:
+            return
+        fplt.plot(ichi["tenkan"],   ax=self.price_ax, legend="전환선",   color="#cc4444", width=1)
+        fplt.plot(ichi["kijun"],    ax=self.price_ax, legend="기준선",   color="#3377bb", width=1)
+        fplt.plot(ichi["senkou_a"], ax=self.price_ax, legend="선행스팬1", color="#5fb85f", width=1)
+        fplt.plot(ichi["senkou_b"], ax=self.price_ax, legend="선행스팬2", color="#cc6677", width=1)
+        fplt.plot(ichi["chikou"],   ax=self.price_ax, legend="후행스팬",  color="#888833", width=1)
+        # Kumo (구름대) 빗금 색칠 — pyqtgraph FillBetweenItem 사용
+        try:
+            self._draw_kumo(ichi["senkou_a"], ichi["senkou_b"])
+        except Exception:
+            pass
+
+    def _draw_kumo(self, span_a: pd.Series, span_b: pd.Series) -> None:
+        """선행스팬1·2 사이를 빗금 패턴으로 색칠.
+        a >= b: 양구름(녹), a < b: 음구름(빨)."""
+        import pyqtgraph as pg
+        from PySide6.QtGui import QBrush, QColor
+        df = pd.DataFrame({"a": span_a, "b": span_b}).dropna()
+        if df.empty:
+            return
+        # finplot 시간축은 datetime을 epoch nanoseconds(int64)로 사용
+        x = df.index.astype("int64").to_numpy()
+        a = df["a"].to_numpy(dtype=float)
+        b = df["b"].to_numpy(dtype=float)
+        # 빈 pen으로 보조 PlotDataItem 만들어 fill 사이에 끼움 (라인은 위에서 이미 그림)
+        pen_none = pg.mkPen(None)
+        pdi_a = pg.PlotDataItem(x, a, pen=pen_none)
+        pdi_b = pg.PlotDataItem(x, b, pen=pen_none)
+        self.price_ax.addItem(pdi_a)
+        self.price_ax.addItem(pdi_b)
+        # 양구름·음구름을 두 개의 fill로 분리 그리기 (각자 다른 brush)
+        # 단순화: 단일 색상의 빗금 패턴 (양·음 무관)
+        bull_brush = QBrush(QColor(95, 184, 95, 110))   # 녹색
+        bull_brush.setStyle(Qt.BDiagPattern)
+        fill_bull = pg.FillBetweenItem(pdi_a, pdi_b, brush=bull_brush)
+        self.price_ax.addItem(fill_bull)
+
+    def _draw_compare_index(self, d: pd.DataFrame) -> None:
+        """선택된 비교 지수를 종목 가격과 동일점 정규화해 오버레이."""
+        cmp_idx = self.cmp_combo.currentData()
+        if not cmp_idx:
+            return
+        idx_df = fetch_krx_index_daily(cmp_idx, days=DEFAULT_DAYS)
+        if idx_df.empty:
+            return
+        k = idx_df.copy()
+        k["date"] = pd.to_datetime(k["date"])
+        k = k.set_index("date").sort_index()
+        k = k.loc[k.index >= d.index.min()]
+        if k.empty:
+            return
+        k_norm = k["close"] / k["close"].iloc[0] * d["close"].iloc[0]
+        fplt.plot(k_norm, ax=self.price_ax,
+                  legend=f"{cmp_idx}(정규화)", color="#888800", width=1)
+
     # --- 렌더러 ---------------------------------------------------------
     def _render_price(self, daily_df: pd.DataFrame, code: str) -> None:
         """선택된 주기(일/주/5분)에 맞춰 캔들 + MA + 거래량 렌더."""
@@ -2191,25 +2252,39 @@ class DataChartWindow(QMainWindow):
             time_col = "date"
             ma_short, ma_long = 4, 12  # 4주(약 1개월), 12주(약 3개월)
         elif tf == "min5":
-            self.status.setText(f"{code} 5분봉 로딩 중 (Yahoo Finance)...")
-            QApplication.processEvents()
-            # 1순위: Yahoo Finance 진짜 5분 OHLC (60일치)
-            d = fetch_minute_yahoo(code, interval="5m", days=60)
-            src = "Yahoo 5m"
-            if d.empty:
-                self.status.setText(f"{code} 5분봉 폴백 (Naver siseJson)...")
+            # 캐시 활용: WS tick으로 자주 재렌더되므로 매번 fetch는 비쌈
+            if self._min5_history is None or self._min5_history.empty:
+                self.status.setText(f"{code} 5분봉 로딩 중 (Yahoo Finance)...")
                 QApplication.processEvents()
-                df_1min = fetch_minute_naver(code, days=5)
-                if df_1min.empty:
-                    self.status.setText("5분봉 데이터 없음 (Yahoo·Naver 모두 빈 응답)")
-                    return
-                d = resample_to_5min(df_1min)
-                src = "Naver 합성"
-            self._minute_source = src
+                d_hist = fetch_minute_yahoo(code, interval="5m", days=60)
+                src = "Yahoo 5m"
+                if d_hist.empty:
+                    self.status.setText(f"{code} 5분봉 폴백 (Naver siseJson)...")
+                    QApplication.processEvents()
+                    df_1min = fetch_minute_naver(code, days=5)
+                    if df_1min.empty:
+                        self.status.setText("5분봉 데이터 없음")
+                        return
+                    d_hist = resample_to_5min(df_1min)
+                    src = "Naver 합성"
+                self._minute_source = src
+                self._min5_history = d_hist.copy()
+            d = self._min5_history.copy()
+            # 라이브 봉 합성
+            if self._live_bar and self._live_bar.get("tf") == "min5":
+                lb = self._live_bar
+                live_row = pd.DataFrame([{
+                    "datetime": pd.Timestamp(lb["start"]),
+                    "open": lb["open"], "high": lb["high"],
+                    "low": lb["low"], "close": lb["close"],
+                    "volume": int(lb["volume"]),
+                }])
+                d["datetime"] = pd.to_datetime(d["datetime"])
+                d = d[d["datetime"] != live_row["datetime"].iloc[0]]
+                d = pd.concat([d, live_row], ignore_index=True)
             time_col = "datetime"
-            ma_short, ma_long = 12, 60  # 1시간(12*5분), 5시간(60*5분)
-            # 라이브 봉 추가용 history 보관
-            self._min5_history = d.copy()
+            ma_short, ma_long = 12, 60   # 사용 안 함, 호환 변수
+
         else:  # day
             d = daily_df.copy()
             d["date"] = pd.to_datetime(d["date"])
@@ -2224,15 +2299,8 @@ class DataChartWindow(QMainWindow):
         d[time_col] = pd.to_datetime(d[time_col])
         d = d.set_index(time_col).sort_index()
 
-        fplt.candlestick_ochl(d[["open", "close", "high", "low"]], ax=self.price_ax)
-        fplt.plot(d["close"].rolling(ma_short).mean(), ax=self.price_ax,
-                  legend=f"MA{ma_short}", color="#3399ff")
-        fplt.plot(d["close"].rolling(ma_long).mean(), ax=self.price_ax,
-                  legend=f"MA{ma_long}", color="#ff9933")
-        # 거래량을 만주 단위로 변환해서 6.0e+06 같은 과학적 표기 제거
-        d_vol = d[["open", "close", "volume"]].copy()
-        d_vol["volume"] = (d_vol["volume"] / 10000).round().astype("int64")
-        fplt.volume_ocv(d_vol, ax=self.vol_ax)
+        # 캔들 + 4종 이동평균(5/20/112/224) + 거래량 + 일목균형표 (공통 헬퍼)
+        self._draw_candle_volume_indicators(d)
 
         # 현재가 라벨 + 차트 가로 점선
         # KIS 키 있으면 실시간 KIS 현재가, 없으면 OHLCV 마지막 종가 (지연)
@@ -2261,29 +2329,9 @@ class DataChartWindow(QMainWindow):
         except Exception:
             pass
 
-        # 일목균형표 5선 (옵션)
-        if self.cb_ichimoku.isChecked():
-            ichi = compute_ichimoku(d)
-            if not ichi["tenkan"].dropna().empty:
-                fplt.plot(ichi["tenkan"],   ax=self.price_ax, legend="전환선(9)",  color="#cc0000")
-                fplt.plot(ichi["kijun"],    ax=self.price_ax, legend="기준선(26)", color="#0066cc")
-                fplt.plot(ichi["senkou_a"], ax=self.price_ax, legend="선행스팬1",   color="#5fb85f")
-                fplt.plot(ichi["senkou_b"], ax=self.price_ax, legend="선행스팬2",   color="#cc6677")
-                fplt.plot(ichi["chikou"],   ax=self.price_ax, legend="후행스팬",    color="#999900")
-
-        # 지수 비교 오버레이: 시작일=종목 종가로 정규화
-        cmp_idx = self.cmp_combo.currentData()
-        if cmp_idx and tf in ("day", "week"):
-            idx_df = fetch_krx_index_daily(cmp_idx, days=DEFAULT_DAYS)
-            if not idx_df.empty:
-                k = idx_df.copy()
-                k["date"] = pd.to_datetime(k["date"])
-                k = k.set_index("date").sort_index()
-                k = k.loc[k.index >= d.index.min()]
-                if not k.empty:
-                    k_norm = k["close"] / k["close"].iloc[0] * d["close"].iloc[0]
-                    fplt.plot(k_norm, ax=self.price_ax,
-                              legend=f"{cmp_idx}(정규화)", color="#888800")
+        # 지수 비교 오버레이 (일/주봉만)
+        if tf in ("day", "week"):
+            self._draw_compare_index(d)
 
     def _render_flow(self, df: pd.DataFrame, naver_df: pd.DataFrame | None = None) -> None:
         self.flow_ax.reset()
