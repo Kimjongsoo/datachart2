@@ -35,7 +35,8 @@ from pathlib import Path
 
 import duckdb
 import pandas as pd
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
+import threading as _threading
 import time as _time
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QLabel,
@@ -1064,6 +1065,40 @@ def kis_current_price(code: str) -> dict | None:
         return None
 
 
+def kis_get_approval_key() -> str | None:
+    """KIS WebSocket용 approval_key 발급. REST OAuth와는 별개의 키.
+    24시간 유효, 발급 횟수 제한 있어 모듈 캐시.
+    """
+    appkey, appsecret, base = _kis_resolve()
+    if not appkey or not appsecret:
+        return None
+    cur_env = (os.environ.get("KIS_ENV") or "real").strip().lower()
+    cache_key = f"_approval_{cur_env}"
+    cache = _kis_token_cache.setdefault(cache_key, {"key": None, "expire": 0.0})
+    if cache.get("key") and cache.get("expire", 0) > _time.time():
+        return cache["key"]
+    try:
+        body = _json.dumps({
+            "grant_type": "client_credentials",
+            "appkey": appkey.strip(),
+            "secretkey": appsecret.strip(),
+        }).encode("utf-8")
+        req = _urlreq.Request(
+            f"{base}/oauth2/Approval", data=body, method="POST",
+            headers={"Content-Type": "application/json; charset=utf-8"},
+        )
+        with _urlreq.urlopen(req, timeout=10) as r:
+            data = _json.loads(r.read().decode("utf-8"))
+        ak = data.get("approval_key")
+        if not ak:
+            return None
+        cache["key"] = ak
+        cache["expire"] = _time.time() + 23 * 3600
+        return ak
+    except Exception:
+        return None
+
+
 def kis_diagnose() -> dict:
     """KIS 키/토큰 진단. 환경(모의/실전), 토큰 발급, 현재가 1건 호출 결과 반환."""
     appkey, appsecret, base = _kis_resolve()
@@ -1083,6 +1118,150 @@ def kis_diagnose() -> dict:
         "base": base,
         "sample": {"code": "005930", "price": sample["price"], "volume": sample["volume"]},
     }
+
+
+# --- KIS WebSocket 실시간 시세 (체결가 H0STCNT0 push) ----------------------
+KIS_WS_REAL = "ws://ops.koreainvestment.com:21000"
+KIS_WS_MOCK = "ws://ops.koreainvestment.com:31000"
+
+
+class KisRealtimeWorker(QObject):
+    """KIS WebSocket H0STCNT0 (실시간 주식 체결가) 구독.
+    별도 스레드에서 ws 유지, 체결 push마다 Qt signal로 GUI에 전달."""
+
+    tick = Signal(dict)        # {"code", "time", "price", "change_rate", "cum_volume", "tick_volume"}
+    status = Signal(str)       # 연결 상태 메시지
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._thread: _threading.Thread | None = None
+        self._ws = None
+        self._stop = _threading.Event()
+        self._current_code: str | None = None
+        self._lock = _threading.Lock()
+
+    def start(self, code: str) -> None:
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                # 기존 스레드에 종목 변경만 전달 (재구독)
+                self._switch_code(code)
+                return
+            self._current_code = code
+            self._stop.clear()
+            self._thread = _threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        try:
+            if self._ws:
+                self._ws.close()
+        except Exception:
+            pass
+        self._ws = None
+
+    def _switch_code(self, new_code: str) -> None:
+        old = self._current_code
+        if old == new_code:
+            return
+        try:
+            if self._ws and old:
+                self._ws.send(self._build_msg(old, register=False))
+            if self._ws and new_code:
+                self._ws.send(self._build_msg(new_code, register=True))
+        except Exception:
+            pass
+        self._current_code = new_code
+
+    def _build_msg(self, code: str, register: bool = True) -> str:
+        appkey = kis_get_approval_key() or ""
+        return _json.dumps({
+            "header": {
+                "approval_key": appkey,
+                "custtype": "P",
+                "tr_type": "1" if register else "2",
+                "content-type": "utf-8",
+            },
+            "body": {"input": {"tr_id": "H0STCNT0", "tr_key": code}},
+        })
+
+    def _run(self) -> None:
+        try:
+            from websockets.sync.client import connect as ws_connect
+        except ImportError:
+            self.status.emit("websockets 라이브러리 없음")
+            return
+        approval = kis_get_approval_key()
+        if not approval:
+            self.status.emit("approval_key 발급 실패")
+            return
+        env = (os.environ.get("KIS_ENV") or "real").strip().lower()
+        url = KIS_WS_MOCK if env == "mock" else KIS_WS_REAL
+        try:
+            with ws_connect(url, open_timeout=10, close_timeout=5) as ws:
+                self._ws = ws
+                self.status.emit(f"WS 연결 ({env})")
+                if self._current_code:
+                    ws.send(self._build_msg(self._current_code, register=True))
+                while not self._stop.is_set():
+                    try:
+                        raw = ws.recv(timeout=2)
+                    except TimeoutError:
+                        continue
+                    except Exception:
+                        break
+                    if isinstance(raw, bytes):
+                        raw = raw.decode("utf-8", errors="replace")
+                    self._parse(raw)
+        except Exception as e:
+            self.status.emit(f"WS 에러: {type(e).__name__}")
+        finally:
+            self._ws = None
+
+    def _parse(self, raw: str) -> None:
+        """KIS 실시간 응답 파싱.
+        체결가 형식: '0|H0STCNT0|001|005930^120000^77000^5^...'
+        제어 메시지: JSON ({header, body})
+        """
+        if not raw:
+            return
+        if raw[:1] in ("0", "1") and "|" in raw:
+            parts = raw.split("|", 3)
+            if len(parts) < 4:
+                return
+            tr_id = parts[1]
+            if tr_id != "H0STCNT0":
+                return
+            data_block = parts[3]
+            # 여러 체결이 한 패킷에 올 수 있음 (개수: parts[2])
+            try:
+                count = int(parts[2])
+            except ValueError:
+                count = 1
+            fields_per = data_block.count("^") // max(count, 1) + 1
+            chunks = data_block.split("^")
+            for i in range(count):
+                f = chunks[i * fields_per:(i + 1) * fields_per]
+                if len(f) < 14:
+                    continue
+                try:
+                    snap = {
+                        "code": f[0],
+                        "time": f[1],
+                        "price": float(f[2]),
+                        "change_rate": float(f[5]) if f[5] else 0.0,
+                        "open": float(f[7]) if f[7] else None,
+                        "high": float(f[8]) if f[8] else None,
+                        "low": float(f[9]) if f[9] else None,
+                        "tick_volume": int(f[12]) if f[12] else 0,
+                        "cum_volume": int(f[13]) if f[13] else 0,
+                    }
+                    self.tick.emit(snap)
+                except (ValueError, IndexError):
+                    continue
+        else:
+            # JSON 제어 메시지 (구독 확인 등) — 무시
+            pass
 
 
 # --- Yahoo Finance 분봉 (진짜 OHLC, 60일치, 무료, 인증 불필요) ------------
@@ -1544,6 +1723,11 @@ class DataChartWindow(QMainWindow):
         self._price_label_timer.setInterval(2000)  # 2초 간격 (가격만 표시)
         self._price_label_timer.timeout.connect(self._poll_price_label_only)
 
+        # KIS WebSocket 실시간 체결가 (틱 단위 push)
+        self._kis_ws = KisRealtimeWorker()
+        self._kis_ws.tick.connect(self._on_realtime_tick)
+        self._kis_ws.status.connect(lambda s: print(f"[KIS WS] {s}"))
+
         # 첫 로드
         self.load_all()
 
@@ -1570,24 +1754,10 @@ class DataChartWindow(QMainWindow):
         self._render_price(self._last_ohlcv, self.code_input.text().strip())
         fplt.refresh()
         # 5분봉 모드 + KIS 키 등록 시 1초 폴링 시작
-        ak3, _, _ = _kis_resolve()
-        is_min5 = self.tf_combo.currentData() == "min5"
-        if is_min5 and ak3:
-            if not self._rt_timer.isActive():
-                self._rt_timer.start()
-            if self._price_label_timer.isActive():
-                self._price_label_timer.stop()  # 5분봉 모드에선 라이브 봉 폴링이 라벨도 갱신
-        else:
-            if self._rt_timer.isActive():
-                self._rt_timer.stop()
+        # 주기 변경 시 WS는 그대로 유지 (코드 동일하면 재구독 안 함)
+        # 5분봉이 아닌 모드로 전환하면 라이브 봉 상태만 초기화
+        if self.tf_combo.currentData() != "min5":
             self._live_bar = None
-            # 비-5분봉 모드 + KIS 키 있고 정규장이면 가격 라벨만 폴링
-            if ak3 and self._is_market_open():
-                if not self._price_label_timer.isActive():
-                    self._price_label_timer.start()
-            else:
-                if self._price_label_timer.isActive():
-                    self._price_label_timer.stop()
 
     @staticmethod
     def _is_market_open() -> bool:
@@ -1604,6 +1774,45 @@ class DataChartWindow(QMainWindow):
         n = now or _dt.now()
         return n.replace(second=0, microsecond=0,
                          minute=(n.minute // 5) * 5)
+
+    def _on_realtime_tick(self, snap: dict) -> None:
+        """KIS WebSocket에서 체결 push 받을 때마다 호출. 가격 라벨 + 라이브 봉 갱신."""
+        if snap.get("code") != self.code_input.text().strip():
+            return
+        try:
+            price = float(snap["price"])
+            change_pct = float(snap.get("change_rate") or 0.0)
+            color = "#cc0000" if change_pct >= 0 else "#0066cc"
+            self.price_label.setText(f"{price:,.0f}원  {change_pct:+.2f}%  ⚡LIVE")
+            self.price_label.setStyleSheet(
+                f"font-size: 18px; font-weight: bold; padding: 2px 10px; "
+                f"color: {color}; background-color: #fff8e1; border-radius: 4px;"
+            )
+        except Exception:
+            return
+        # 5분봉 모드면 라이브 봉도 누적 갱신 (틱 단위라 더 정밀)
+        if self.tf_combo.currentData() != "min5":
+            return
+        bar_start = self._bar_start_5min()
+        cum_vol = snap.get("cum_volume") or 0
+        if self._live_bar is None or self._live_bar["start"] != bar_start:
+            self._live_bar = {
+                "start": bar_start,
+                "open": price, "high": price, "low": price, "close": price,
+                "volume_at_start": cum_vol, "volume": 0,
+            }
+        else:
+            lb = self._live_bar
+            lb["high"] = max(lb["high"], price)
+            lb["low"] = min(lb["low"], price)
+            lb["close"] = price
+            lb["volume"] = max(0, cum_vol - lb["volume_at_start"])
+        self._last_kis_price = price
+        self._render_min5_with_live()
+        try:
+            fplt.refresh()
+        except Exception:
+            pass
 
     def _poll_price_label_only(self) -> None:
         """KIS 현재가만 가져와 상단 가격 라벨 실시간 갱신 (차트는 안 건드림).
@@ -1767,20 +1976,23 @@ class DataChartWindow(QMainWindow):
             f"{name}({code})  ·  {len(ohlcv)}봉  ·  종가 {last_close:,.0f}원{warn}{krx_info}{min_info}{kis_info}"
         )
 
-        # 폴링 시작 결정 (정규장 시간 + KIS 키 있을 때)
+        # 실시간 시세 시작 결정 (정규장 시간 + KIS 키 있을 때)
+        # 1순위: WebSocket (틱 단위 push, 진짜 실시간)
+        # 2순위: REST 폴링 (WS 실패 또는 미사용 시)
         ak2, _, _ = _kis_resolve()
-        is_min5 = self.tf_combo.currentData() == "min5"
         if ak2 and self._is_market_open():
-            if is_min5:
-                if not self._rt_timer.isActive():
-                    self._rt_timer.start()
-                if self._price_label_timer.isActive():
-                    self._price_label_timer.stop()
-            else:
-                if self._rt_timer.isActive():
-                    self._rt_timer.stop()
-                if not self._price_label_timer.isActive():
-                    self._price_label_timer.start()
+            self._kis_ws.start(code)
+            # WS가 가격 라벨 + 라이브 봉 모두 처리하므로 REST 폴링은 정지
+            if self._rt_timer.isActive():
+                self._rt_timer.stop()
+            if self._price_label_timer.isActive():
+                self._price_label_timer.stop()
+        else:
+            self._kis_ws.stop()
+            if self._rt_timer.isActive():
+                self._rt_timer.stop()
+            if self._price_label_timer.isActive():
+                self._price_label_timer.stop()
         fplt.refresh()
 
     # --- 렌더러 ---------------------------------------------------------
@@ -2012,6 +2224,7 @@ class DataChartWindow(QMainWindow):
 
 def main() -> None:
     init_db()
+    import atexit
     # DPI 경고 회피: QApplication 생성 전에 명시적으로 컨텍스트 지정
     try:
         QApplication.setHighDpiScaleFactorRoundingPolicy(
@@ -2021,6 +2234,7 @@ def main() -> None:
         pass
     app = QApplication(sys.argv)
     win = DataChartWindow()
+    atexit.register(lambda: win._kis_ws.stop())
     win.show()
     fplt.show(qt_exec=False)
     sys.exit(app.exec())
