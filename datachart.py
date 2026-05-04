@@ -1684,13 +1684,20 @@ def compute_ichimoku(df: pd.DataFrame, conv: int = 9, base: int = 26,
     span_a_calc = (tenkan + kijun) / 2
     span_b_calc = (high.rolling(span_b_period).max() + low.rolling(span_b_period).min()) / 2
 
-    # 미래 shift봉 인덱스 생성: 가장 흔한 봉 간격(주말 갭 회피)
+    # 미래 shift봉 인덱스 생성: HTS와 같이 거래일(영업일) 기준으로 26봉 forward
     if len(df.index) >= 2:
         diffs = pd.Series(df.index[1:] - df.index[:-1])
         delta = diffs.mode().iloc[0] if not diffs.empty else pd.Timedelta(days=1)
     else:
         delta = pd.Timedelta(days=1)
-    future = pd.DatetimeIndex([df.index[-1] + delta * (i + 1) for i in range(shift)])
+    last = df.index[-1]
+    if delta == pd.Timedelta(days=1) or delta == pd.Timedelta(days=2) or delta == pd.Timedelta(days=3):
+        # 일봉 (영업일 갭 1~3일 혼재). 영업일 기준으로 forward (주말 skip)
+        future = pd.bdate_range(start=last + pd.tseries.offsets.BDay(1),
+                                periods=shift, freq="B")
+    else:
+        # 5분봉/주봉/월봉: 모드 delta 그대로 사용 (장 시간 외 skip은 사소함)
+        future = pd.DatetimeIndex([last + delta * (i + 1) for i in range(shift)])
     ext_idx = df.index.append(future)
 
     # 선행스팬: 오늘 계산값을 오늘+26봉 자리에 plot
@@ -2348,8 +2355,9 @@ class DataChartWindow(QMainWindow):
             self._draw_ichimoku(d)
 
     def _draw_ichimoku(self, d: pd.DataFrame) -> None:
-        """일목균형표 — 선행스팬1·2를 점선으로 표시 (다른 보조지표들과 시각적 구분)."""
-        ichi = compute_ichimoku(d)
+        """일목균형표 — 선행스팬1·2를 점선으로 표시.
+        파라미터: 전환 9, 기준 26, 선행스팬2 52, 선행/후행 shift 26 (HTS 표준)."""
+        ichi = compute_ichimoku(d, conv=9, base=26, span_b_period=52, shift=26)
         if ichi["senkou_a"].dropna().empty:
             return
         item_a = fplt.plot(ichi["senkou_a"], ax=self.price_ax, color="#dd2200")
