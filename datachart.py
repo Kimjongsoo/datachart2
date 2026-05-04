@@ -1142,6 +1142,91 @@ def kis_current_price(code: str) -> dict | None:
         return None
 
 
+def fetch_minute_kis_today(code: str, max_bars: int = 120) -> pd.DataFrame:
+    """KIS REST `inquire-time-itemchartprice` (FHKST03010200)로 오늘 1분봉 조회.
+    페이징해서 최대 max_bars 봉까지 받음 (30봉/호출).
+    반환: DataFrame[datetime, open, high, low, close, volume] (KST naive)
+    """
+    token = kis_get_token()
+    appkey, appsecret, base = _kis_resolve()
+    if not token or not appkey or not appsecret:
+        return pd.DataFrame()
+    headers = {
+        "authorization": f"Bearer {token}",
+        "appkey": appkey.strip(),
+        "appsecret": appsecret.strip(),
+        "tr_id": "FHKST03010200",
+        "Content-Type": "application/json",
+    }
+    url_base = f"{base}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
+    rows: list = []
+    seen_times: set = set()
+    cur_hour = _dt.now().strftime("%H%M%S")
+
+    for _ in range(max(1, max_bars // 30 + 1)):
+        params = {
+            "FID_ETC_CLS_CODE": "",
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": code,
+            "FID_INPUT_HOUR_1": cur_hour,
+            "FID_PW_DATA_INCU_YN": "Y",
+        }
+        try:
+            qs = _urlparse.urlencode(params)
+            req = _urlreq.Request(f"{url_base}?{qs}", headers=headers)
+            with _urlreq.urlopen(req, timeout=8) as r:
+                data = _json.loads(r.read().decode("utf-8"))
+        except Exception:
+            break
+        out2 = data.get("output2") or []
+        if not out2:
+            break
+        oldest_hhmmss = None
+        for row in out2:
+            hhmmss = row.get("stck_cntg_hour", "")
+            d_str = row.get("stck_bsop_date", _dt.now().strftime("%Y%m%d"))
+            if not hhmmss or not d_str:
+                continue
+            try:
+                dt = _dt.strptime(f"{d_str}{hhmmss}", "%Y%m%d%H%M%S")
+            except ValueError:
+                continue
+            key = dt.isoformat()
+            if key in seen_times:
+                continue
+            seen_times.add(key)
+            close_v = _krx_num(row.get("stck_prpr"))
+            if close_v is None:
+                continue
+            rows.append({
+                "datetime": dt,
+                "open":  _krx_num(row.get("stck_oprc")) or close_v,
+                "high":  _krx_num(row.get("stck_hgpr")) or close_v,
+                "low":   _krx_num(row.get("stck_lwpr")) or close_v,
+                "close": close_v,
+                "volume": int(_krx_num(row.get("cntg_vol")) or 0),
+            })
+            oldest_hhmmss = hhmmss
+        if len(rows) >= max_bars or not oldest_hhmmss:
+            break
+        # 다음 페이지: 가장 오래된 봉 시각의 1분 전
+        try:
+            last_dt = _dt.strptime(oldest_hhmmss, "%H%M%S")
+            prev = last_dt - timedelta(minutes=1)
+            new_hour = prev.strftime("%H%M%S")
+            if new_hour == cur_hour:
+                break
+            cur_hour = new_hour
+        except ValueError:
+            break
+
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    df = df.drop_duplicates(subset=["datetime"]).sort_values("datetime").reset_index(drop=True)
+    return df
+
+
 def kis_get_approval_key() -> str | None:
     """KIS WebSocket용 approval_key 발급. REST OAuth와는 별개의 키.
     24시간 유효, 발급 횟수 제한 있어 모듈 캐시.
@@ -2351,6 +2436,23 @@ class DataChartWindow(QMainWindow):
                         return
                     d_hist = resample_to_5min(df_1min)
                     src = "Naver 합성"
+                # KIS 오늘 1분봉으로 yfinance 지연 갭(~15분) 보강
+                ak_kis, _, _ = _kis_resolve()
+                if ak_kis:
+                    self.status.setText(f"{code} 오늘 갭 보강 중 (KIS 분봉)...")
+                    QApplication.processEvents()
+                    kis_1min = fetch_minute_kis_today(code, max_bars=120)
+                    if not kis_1min.empty:
+                        kis_5m = resample_to_5min(kis_1min)
+                        if not kis_5m.empty:
+                            d_hist["datetime"] = pd.to_datetime(d_hist["datetime"])
+                            kis_5m["datetime"] = pd.to_datetime(kis_5m["datetime"])
+                            # KIS가 커버하는 시간대 이후의 yfinance 봉은 KIS로 교체
+                            kis_min_t = kis_5m["datetime"].min()
+                            d_hist = d_hist[d_hist["datetime"] < kis_min_t]
+                            d_hist = pd.concat([d_hist, kis_5m], ignore_index=True)
+                            d_hist = d_hist.sort_values("datetime").reset_index(drop=True)
+                            src = src + " + KIS 갭보강"
                 self._minute_source = src
                 self._min5_history = d_hist.copy()
             d = self._min5_history.copy()
