@@ -2141,22 +2141,21 @@ class DataChartWindow(QMainWindow):
         fplt.refresh()
 
     # --- 차트 공통 그리기 헬퍼 -----------------------------------------
-    # 4종 이동평균 사양: (기간, 색)
+    # 4종 이동평균 사양: (기간, 색, 두께) — 20만 강조, 나머지는 얇게
     _MA_SPECS = (
-        (5,   "#2e8b57"),  # 녹색 (sea green)
-        (20,  "#8b4513"),  # 갈색 (saddle brown)
-        (112, "#9933cc"),  # 보라
-        (224, "#cccc33"),  # 노랑(올리브)
+        (5,   "#2e8b57", 0.5),  # 녹색 sea green
+        (20,  "#8b4513", 1.5),  # 갈색 saddle brown — 강조
+        (112, "#9933cc", 0.5),  # 보라
+        (224, "#cccc33", 0.5),  # 노랑(올리브)
     )
 
     def _draw_candle_volume_indicators(self, d: pd.DataFrame) -> None:
-        """캔들 + 4종 MA + 거래량(만주) + 일목균형표(옵션). price_ax/vol_ax 이미 reset 가정."""
+        """캔들 + 4종 MA + 거래량(만주) + 일목균형표(옵션). 라벨 텍스트는 표시 안 함."""
         fplt.candlestick_ochl(d[["open", "close", "high", "low"]], ax=self.price_ax)
-        for period, color in self._MA_SPECS:
+        for period, color, w in self._MA_SPECS:
             if len(d) >= period:
                 fplt.plot(d["close"].rolling(period).mean(),
-                          ax=self.price_ax, legend=f"MA{period}",
-                          color=color, width=1)
+                          ax=self.price_ax, color=color, width=w)
         # 거래량 (만주 단위)
         vol_d = d[["open", "close", "volume"]].copy()
         vol_d["volume"] = (vol_d["volume"] / 10000).round().astype("int64")
@@ -2166,45 +2165,40 @@ class DataChartWindow(QMainWindow):
             self._draw_ichimoku(d)
 
     def _draw_ichimoku(self, d: pd.DataFrame) -> None:
-        """일목균형표 5선 + 구름대(Kumo) 색칠. 보조지표라 얇은 선."""
+        """일목균형표 5선(얇게) + 구름대(Kumo) 빗금 색칠. 라벨 없음."""
         ichi = compute_ichimoku(d)
         if ichi["tenkan"].dropna().empty:
             return
-        fplt.plot(ichi["tenkan"],   ax=self.price_ax, legend="전환선",   color="#cc4444", width=1)
-        fplt.plot(ichi["kijun"],    ax=self.price_ax, legend="기준선",   color="#3377bb", width=1)
-        fplt.plot(ichi["senkou_a"], ax=self.price_ax, legend="선행스팬1", color="#5fb85f", width=1)
-        fplt.plot(ichi["senkou_b"], ax=self.price_ax, legend="선행스팬2", color="#cc6677", width=1)
-        fplt.plot(ichi["chikou"],   ax=self.price_ax, legend="후행스팬",  color="#888833", width=1)
-        # Kumo (구름대) 빗금 색칠 — pyqtgraph FillBetweenItem 사용
+        fplt.plot(ichi["tenkan"],   ax=self.price_ax, color="#cc4444", width=0.5)
+        fplt.plot(ichi["kijun"],    ax=self.price_ax, color="#3377bb", width=0.5)
+        # 선행스팬1·2: fplt.plot 반환을 받아 Kumo fill에 사용 (x 좌표 자동 정합)
+        item_a = fplt.plot(ichi["senkou_a"], ax=self.price_ax,
+                           color="#5fb85f", width=0.5)
+        item_b = fplt.plot(ichi["senkou_b"], ax=self.price_ax,
+                           color="#cc6677", width=0.5)
+        fplt.plot(ichi["chikou"],   ax=self.price_ax, color="#888833", width=0.5)
+        # Kumo (구름대) 빗금 — finplot이 반환한 PlotDataItem을 직접 fill에 사용
         try:
-            self._draw_kumo(ichi["senkou_a"], ichi["senkou_b"])
+            self._draw_kumo_from_items(item_a, item_b)
         except Exception:
             pass
 
-    def _draw_kumo(self, span_a: pd.Series, span_b: pd.Series) -> None:
-        """선행스팬1·2 사이를 빗금 패턴으로 색칠.
-        a >= b: 양구름(녹), a < b: 음구름(빨)."""
+    def _draw_kumo_from_items(self, item_a, item_b) -> None:
+        """fplt.plot()이 반환한 PlotDataItem 두 개를 받아 그 사이를 빗금으로 채움.
+        finplot이 자체 변환한 동일 x축을 공유하므로 정렬 정확."""
         import pyqtgraph as pg
         from PySide6.QtGui import QBrush, QColor
-        df = pd.DataFrame({"a": span_a, "b": span_b}).dropna()
-        if df.empty:
+        # finplot의 plot 반환은 pg.PlotDataItem (또는 그것을 가진 wrapper). 둘 다 처리
+        a = item_a if hasattr(item_a, "xData") else getattr(item_a, "plot_obj", item_a)
+        b = item_b if hasattr(item_b, "xData") else getattr(item_b, "plot_obj", item_b)
+        if a is None or b is None:
             return
-        # finplot 시간축은 datetime을 epoch nanoseconds(int64)로 사용
-        x = df.index.astype("int64").to_numpy()
-        a = df["a"].to_numpy(dtype=float)
-        b = df["b"].to_numpy(dtype=float)
-        # 빈 pen으로 보조 PlotDataItem 만들어 fill 사이에 끼움 (라인은 위에서 이미 그림)
-        pen_none = pg.mkPen(None)
-        pdi_a = pg.PlotDataItem(x, a, pen=pen_none)
-        pdi_b = pg.PlotDataItem(x, b, pen=pen_none)
-        self.price_ax.addItem(pdi_a)
-        self.price_ax.addItem(pdi_b)
-        # 양구름·음구름을 두 개의 fill로 분리 그리기 (각자 다른 brush)
-        # 단순화: 단일 색상의 빗금 패턴 (양·음 무관)
-        bull_brush = QBrush(QColor(95, 184, 95, 110))   # 녹색
-        bull_brush.setStyle(Qt.BDiagPattern)
-        fill_bull = pg.FillBetweenItem(pdi_a, pdi_b, brush=bull_brush)
-        self.price_ax.addItem(fill_bull)
+        # 빗금 brush — 녹색 BDiagPattern
+        brush = QBrush(QColor(34, 160, 60, 220))   # 진한 녹색, 빗금 라인이 잘 보이게
+        brush.setStyle(Qt.BDiagPattern)
+        fill = pg.FillBetweenItem(a, b, brush=brush)
+        fill.setZValue(-100)  # 캔들 뒤로 깔리도록
+        self.price_ax.addItem(fill)
 
     def _draw_compare_index(self, d: pd.DataFrame) -> None:
         """선택된 비교 지수를 종목 가격과 동일점 정규화해 오버레이."""
@@ -2221,8 +2215,7 @@ class DataChartWindow(QMainWindow):
         if k.empty:
             return
         k_norm = k["close"] / k["close"].iloc[0] * d["close"].iloc[0]
-        fplt.plot(k_norm, ax=self.price_ax,
-                  legend=f"{cmp_idx}(정규화)", color="#888800", width=1)
+        fplt.plot(k_norm, ax=self.price_ax, color="#888800", width=0.7)
 
     # --- 렌더러 ---------------------------------------------------------
     def _render_price(self, daily_df: pd.DataFrame, code: str) -> None:
