@@ -1429,16 +1429,13 @@ class DataChartWindow(QMainWindow):
         self.tabs = QTabWidget()
         root.addWidget(self.tabs, stretch=1)
 
-        # 탭 1: 캔들차트 (가격/거래량/외국인누적/매출 4단)
+        # 탭 1: 캔들차트 (가격 + 거래량 2단)
         price_axes = _as_list(fplt.create_plot_widget(
-            master=self, rows=4, init_zoom_periods=120
+            master=self, rows=2, init_zoom_periods=120
         ))
         self.price_ax = price_axes[0]
         self.vol_ax = price_axes[1]
-        self.foreign_cum_ax = price_axes[2]
-        self.revenue_ax = price_axes[3]
-        self.axs_price = [self.price_ax, self.vol_ax,
-                          self.foreign_cum_ax, self.revenue_ax]
+        self.axs_price = [self.price_ax, self.vol_ax]
         self.tabs.addTab(_wrap_ax(self.price_ax), "차트")
 
         # 탭 2: 수급(투자자별 누적 순매수)
@@ -1474,10 +1471,12 @@ class DataChartWindow(QMainWindow):
         fund_layout.addLayout(self.fund_form)
 
         fund_axes = _as_list(fplt.create_plot_widget(
-            master=self, rows=2, init_zoom_periods=120
+            master=self, rows=3, init_zoom_periods=120
         ))
-        self.fund_ax, self.fund_ax2 = fund_axes[0], fund_axes[1]
-        self.axs_fund = [self.fund_ax, self.fund_ax2]
+        self.fund_ax = fund_axes[0]       # PER/PBR 추이
+        self.fund_ax2 = fund_axes[1]      # 외국인 지분율
+        self.fund_revenue_ax = fund_axes[2]  # 매출/영업이익 분기
+        self.axs_fund = [self.fund_ax, self.fund_ax2, self.fund_revenue_ax]
         fund_layout.addWidget(_wrap_ax(self.fund_ax), stretch=1)
         self.tabs.addTab(fund_widget, "펀더멘털")
 
@@ -1684,11 +1683,9 @@ class DataChartWindow(QMainWindow):
 
     # --- 렌더러 ---------------------------------------------------------
     def _render_price(self, daily_df: pd.DataFrame, code: str) -> None:
-        """선택된 주기(일/주/5분)에 맞춰 캔들 + MA + 거래량 + 외국인누적 + 매출 렌더."""
+        """선택된 주기(일/주/5분)에 맞춰 캔들 + MA + 거래량 렌더."""
         self.price_ax.reset()
         self.vol_ax.reset()
-        self.foreign_cum_ax.reset()
-        self.revenue_ax.reset()
         tf = self.tf_combo.currentData()
 
         if tf == "week":
@@ -1749,43 +1746,6 @@ class DataChartWindow(QMainWindow):
             hline = pg.InfiniteLine(pos=last_close, angle=0,
                                     pen=pg.mkPen(box_color, width=1, style=Qt.DashLine))
             self.price_ax.addItem(hline)
-        except Exception:
-            pass
-
-        # 외국인 누적 패널 (Naver 데이터 사용, 차트 기간에 맞춰 누적)
-        try:
-            flow = fetch_naver_investor_flow(code)
-            if not flow.empty:
-                f = flow.copy()
-                f["date"] = pd.to_datetime(f["date"])
-                f = f.set_index("date").sort_index()
-                # 차트 기간 안으로 자르고 누적 (단위: 주식수 → 만주)
-                f = f.loc[(f.index >= d.index.min()) & (f.index <= d.index.max())]
-                if not f.empty:
-                    cum_foreign = f["foreign_net"].cumsum() / 10000  # 만주
-                    fplt.plot(cum_foreign, ax=self.foreign_cum_ax,
-                              legend="외국인 누적순매수(만주)", color="#cc3333")
-        except Exception:
-            pass
-
-        # 매출 패널 (yfinance 분기 재무제표, 단위: 억원)
-        try:
-            rev = fetch_quarterly_revenue_yahoo(code)
-            if not rev.empty:
-                r = rev.copy()
-                r = r.set_index("date").sort_index()
-                # 차트 기간 안의 분기만
-                r = r.loc[r.index >= d.index.min()]
-                if not r.empty and "revenue" in r.columns:
-                    rev_series = (r["revenue"] / 1e8).dropna()  # 억원
-                    if not rev_series.empty:
-                        fplt.plot(rev_series, ax=self.revenue_ax,
-                                  legend="매출액(억)", color="#88aa44", style="o")
-                    if "operating_income" in r.columns:
-                        op_series = (r["operating_income"] / 1e8).dropna()
-                        if not op_series.empty:
-                            fplt.plot(op_series, ax=self.revenue_ax,
-                                      legend="영업이익(억)", color="#aa4488", style="o")
         except Exception:
             pass
 
@@ -1856,6 +1816,7 @@ class DataChartWindow(QMainWindow):
     ) -> None:
         self.fund_ax.reset()
         self.fund_ax2.reset()
+        self.fund_revenue_ax.reset()
         snap = snapshot or {}
 
         last_close = ohlcv["close"].iloc[-1] if not ohlcv.empty else None
@@ -1913,6 +1874,26 @@ class DataChartWindow(QMainWindow):
             fr = fr.set_index("date").sort_index()
             fplt.plot(fr["foreign_rate"], ax=self.fund_ax2,
                       legend="외국인 지분율(%)", color="#cc3333")
+
+        # 분기 매출/영업이익 (yfinance 재무제표, 단위: 억원)
+        try:
+            rev = fetch_quarterly_revenue_yahoo(code)
+            if not rev.empty:
+                r = rev.copy()
+                r["date"] = pd.to_datetime(r["date"])
+                r = r.set_index("date").sort_index()
+                if "revenue" in r.columns:
+                    rev_s = (r["revenue"] / 1e8).dropna()
+                    if not rev_s.empty:
+                        fplt.plot(rev_s, ax=self.fund_revenue_ax,
+                                  legend="매출액(억원)", color="#2266cc", style="o")
+                if "operating_income" in r.columns:
+                    op_s = (r["operating_income"] / 1e8).dropna()
+                    if not op_s.empty:
+                        fplt.plot(op_s, ax=self.fund_revenue_ax,
+                                  legend="영업이익(억원)", color="#cc6622", style="o")
+        except Exception:
+            pass
 
 
 def main() -> None:
