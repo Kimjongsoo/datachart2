@@ -116,6 +116,14 @@ import finplot as fplt
 with _silence_stderr():
     from pykrx import stock
 
+# --- finplot 표시 timezone 고정 -------------------------------------------
+# 우리 데이터(yfinance, KIS, KRX OpenAPI)는 모두 KST naive로 저장됨.
+# pandas는 naive datetime을 ns로 변환할 때 UTC로 가정 → ns값이 'UTC 11:45'로 저장됨.
+# finplot 기본 display_timezone=tzlocal()=KST면 fromtimestamp가 +9 더해 20:45로 표시.
+# UTC로 고정하면 표시값과 데이터값이 같은 숫자로 보임 (사용자 KST 시각과 일치).
+import datetime as _dt_mod
+fplt.display_timezone = _dt_mod.timezone.utc
+
 # --- 한국 시장 관례: 상승=빨강, 하락=파랑 (캔들·거래량 색상) -------------
 fplt.candle_bull_color = "#dd2200"        # 상승봉 외곽선
 fplt.candle_bull_body_color = "#dd2200"   # 상승봉 채움
@@ -1929,7 +1937,7 @@ class DataChartWindow(QMainWindow):
             self.setMaximumSize(16777215, 16777215)
             # 위젯 변경이 layout에 반영된 뒤 adjust
             self.adjustSize()
-            self.resize(290, 56)
+            self.resize(360, 56)  # % 추가로 약간 더 넓게
             # 색 캐시 무효화 (다음 라벨 갱신 때 흑색 유지)
             self._last_label_color = "stealth"
         else:
@@ -1966,9 +1974,9 @@ class DataChartWindow(QMainWindow):
             self._last_label_color = None  # 다음 갱신 때 색상 재적용
 
     def _update_price_label(self, price: float, change_pct: float, is_live: bool = False) -> None:
-        """가격 라벨 갱신. 스텔스 모드면 흑색·간략, 평소엔 빨강/파랑+태그."""
+        """가격 라벨 갱신. 스텔스 모드면 흑색·간략(가격+%만), 평소엔 빨강/파랑+태그."""
         if self._stealth_on:
-            self.price_label.setText(f"{price:,.0f}")
+            self.price_label.setText(f"{price:,.0f}  {change_pct:+.2f}%")
             return
         color = "#cc0000" if change_pct >= 0 else "#0066cc"
         tag = "  ⚡LIVE" if is_live else ""
