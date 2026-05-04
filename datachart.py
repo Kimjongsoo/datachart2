@@ -2352,11 +2352,11 @@ class DataChartWindow(QMainWindow):
         ichi = compute_ichimoku(d)
         if ichi["senkou_a"].dropna().empty:
             return
-        # 선행스팬1·2: fplt.plot 반환을 받아 Kumo fill에 사용 (x 좌표 자동 정합)
+        # 선행스팬1: 빨강, 선행스팬2: 파랑 (한국 시장 관례 — 양수=빨강, 음수=파랑)
         item_a = fplt.plot(ichi["senkou_a"], ax=self.price_ax,
-                           color="#2e8b57", width=0.5)
+                           color="#dd2200", width=0.5)
         item_b = fplt.plot(ichi["senkou_b"], ax=self.price_ax,
-                           color="#cc6677", width=0.5)
+                           color="#0066dd", width=0.5)
         # Kumo 색칠
         try:
             self._draw_kumo_from_items(item_a, item_b)
