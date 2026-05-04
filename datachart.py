@@ -38,7 +38,7 @@ import pandas as pd
 from PySide6.QtCore import Qt, QTimer
 import time as _time
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFormLayout, QHBoxLayout, QLabel,
+    QApplication, QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QLabel,
     QLineEdit, QMainWindow, QPushButton, QTabWidget, QVBoxLayout, QWidget,
 )
 import finplot as fplt
@@ -1240,6 +1240,54 @@ def get_name(code: str) -> str:
         return code
 
 
+# --- 일목균형표 (Ichimoku Kinko Hyo) -------------------------------------
+def compute_ichimoku(df: pd.DataFrame, conv: int = 9, base: int = 26,
+                     span_b_period: int = 52, shift: int = 26) -> dict:
+    """일목균형표 5선 계산. df는 datetime-index 가진 OHLC dataframe.
+
+    반환 dict (모두 pandas Series, 선행스팬·후행스팬은 미래 shift봉 추가된 확장 인덱스):
+      tenkan   : 전환선 (conv봉 평균 (max+min)/2)
+      kijun    : 기준선 (base봉 평균)
+      senkou_a : 선행스팬1 = (전환+기준)/2, 26봉 앞으로 plot
+      senkou_b : 선행스팬2 = span_b_period봉 평균, 26봉 앞으로 plot
+      chikou   : 후행스팬 = 종가, 26봉 뒤로 plot
+    """
+    if df.empty or len(df) < span_b_period:
+        empty = pd.Series(dtype=float)
+        return {"tenkan": empty, "kijun": empty,
+                "senkou_a": empty, "senkou_b": empty, "chikou": empty}
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+    tenkan = (high.rolling(conv).max() + low.rolling(conv).min()) / 2
+    kijun = (high.rolling(base).max() + low.rolling(base).min()) / 2
+    span_a_calc = (tenkan + kijun) / 2
+    span_b_calc = (high.rolling(span_b_period).max() + low.rolling(span_b_period).min()) / 2
+
+    # 미래 shift봉 인덱스 생성: 가장 흔한 봉 간격(주말 갭 회피)
+    if len(df.index) >= 2:
+        diffs = pd.Series(df.index[1:] - df.index[:-1])
+        delta = diffs.mode().iloc[0] if not diffs.empty else pd.Timedelta(days=1)
+    else:
+        delta = pd.Timedelta(days=1)
+    future = pd.DatetimeIndex([df.index[-1] + delta * (i + 1) for i in range(shift)])
+    ext_idx = df.index.append(future)
+
+    # 선행스팬: 오늘 계산값을 오늘+26봉 자리에 plot
+    senkou_a = pd.Series(index=ext_idx, dtype=float)
+    senkou_a.iloc[shift:shift + len(span_a_calc)] = span_a_calc.values
+    senkou_b = pd.Series(index=ext_idx, dtype=float)
+    senkou_b.iloc[shift:shift + len(span_b_calc)] = span_b_calc.values
+
+    # 후행스팬: 오늘 종가를 오늘-26봉 자리에 plot
+    chikou = pd.Series(index=ext_idx, dtype=float)
+    if len(close) > shift:
+        chikou.iloc[:len(close) - shift] = close.iloc[shift:].values
+
+    return {"tenkan": tenkan, "kijun": kijun,
+            "senkou_a": senkou_a, "senkou_b": senkou_b, "chikou": chikou}
+
+
 # --- GUI 헬퍼 -------------------------------------------------------------
 def _as_list(axes_obj) -> list:
     """finplot.create_plot_widget 반환값이 단일/튜플/리스트 다 다를 수 있어 정규화."""
@@ -1300,6 +1348,12 @@ class DataChartWindow(QMainWindow):
         self.tf_combo.addItem("5분봉", "min5")
         self.tf_combo.currentIndexChanged.connect(self._on_timeframe_changed)
         bar.addWidget(self.tf_combo)
+
+        # 일목균형표 토글
+        self.cb_ichimoku = QCheckBox("일목균형표")
+        self.cb_ichimoku.setToolTip("전환선(9)·기준선(26)·선행스팬1·2(26봉 forward)·후행스팬(26봉 backward)")
+        self.cb_ichimoku.stateChanged.connect(self._on_timeframe_changed)
+        bar.addWidget(self.cb_ichimoku)
 
         # 지수 비교 (KRX OpenAPI 승인된 서비스 사용)
         bar.addWidget(QLabel("비교"))
@@ -1620,6 +1674,16 @@ class DataChartWindow(QMainWindow):
         fplt.plot(d["close"].rolling(ma_long).mean(), ax=self.price_ax,
                   legend=f"MA{ma_long}", color="#ff9933")
         fplt.volume_ocv(d[["open", "close", "volume"]], ax=self.vol_ax)
+
+        # 일목균형표 5선 (옵션)
+        if self.cb_ichimoku.isChecked():
+            ichi = compute_ichimoku(d)
+            if not ichi["tenkan"].dropna().empty:
+                fplt.plot(ichi["tenkan"],   ax=self.price_ax, legend="전환선(9)",  color="#cc0000")
+                fplt.plot(ichi["kijun"],    ax=self.price_ax, legend="기준선(26)", color="#0066cc")
+                fplt.plot(ichi["senkou_a"], ax=self.price_ax, legend="선행스팬1",   color="#5fb85f")
+                fplt.plot(ichi["senkou_b"], ax=self.price_ax, legend="선행스팬2",   color="#cc6677")
+                fplt.plot(ichi["chikou"],   ax=self.price_ax, legend="후행스팬",    color="#999900")
 
         # 지수 비교 오버레이: 시작일=종목 종가로 정규화
         cmp_idx = self.cmp_combo.currentData()
