@@ -1577,6 +1577,8 @@ class DataChartWindow(QMainWindow):
 
         # 상단 컨트롤 바 — 스텔스 모드에서 숨길 위젯들은 self._hideables에 모음
         bar = QHBoxLayout()
+        self._bar_layout = bar
+        self._root_layout = root
         self._hideables: list[QWidget] = []
         self._lbl_code = QLabel("종목코드")
         bar.addWidget(self._lbl_code)
@@ -1819,32 +1821,72 @@ class DataChartWindow(QMainWindow):
         """스텔스 모드: 차트/탭/색상 다 숨기고 종목명+가격만 작은 흑색으로."""
         self._stealth_on = self.btn_stealth.isChecked()
         if self._stealth_on:
+            # 평상시 상태 저장 (복원용)
             self._normal_geometry = self.saveGeometry()
+            cw = self.centralWidget()
+            self._orig_root_margins = self._root_layout.contentsMargins()
+            self._orig_root_spacing = self._root_layout.spacing()
+            self._orig_bar_margins = self._bar_layout.contentsMargins()
+            self._orig_bar_spacing = self._bar_layout.spacing()
+            self._orig_min_size = self.minimumSize()
+            self._orig_max_size = self.maximumSize()
+
+            # 차트·컨트롤 위젯들 숨김
             for w in self._hideables:
                 w.hide()
             self.tabs.hide()
-            # 종목코드 입력란을 작게
+
+            # 레이아웃 마진/간격 최소화
+            self._root_layout.setContentsMargins(2, 2, 2, 2)
+            self._root_layout.setSpacing(0)
+            self._bar_layout.setContentsMargins(2, 1, 2, 1)
+            self._bar_layout.setSpacing(4)
+
+            # 종목코드 입력란 컴팩트
             self.code_input.setMaximumWidth(60)
-            self.code_input.setStyleSheet("font-size: 11px; padding: 1px;")
-            # 종목명·가격을 작은 흑색
+            self.code_input.setMinimumWidth(50)
+            self.code_input.setStyleSheet("font-size: 11px; padding: 1px 3px;")
+
+            # 종목명·가격 작은 흑색
             self.name_label.setStyleSheet(
-                "font-size: 11px; padding: 0 4px; color: #333; font-weight: normal;"
+                "font-size: 11px; padding: 0 3px; color: #333; font-weight: normal;"
             )
             self.price_label.setStyleSheet(
-                "font-size: 11px; padding: 1px 4px; color: #333; "
+                "font-size: 11px; padding: 0 3px; color: #333; "
                 "background-color: transparent; font-weight: normal;"
             )
-            self.btn_stealth.setText("📖")  # 스텔스 ON 표시
+
+            # 토글 버튼도 작게
+            self.btn_stealth.setText("📖")
+            self.btn_stealth.setMaximumWidth(24)
+            self.btn_stealth.setMinimumWidth(24)
+
             self.setWindowTitle("Memo")
-            # 작은 창
-            self.resize(360, 36)
+
+            # 진짜 작은 고정 사이즈
+            self.setMinimumSize(0, 0)
+            self.setMaximumSize(16777215, 16777215)
+            # 위젯 변경이 layout에 반영된 뒤 adjust
+            self.adjustSize()
+            self.resize(290, 56)
             # 색 캐시 무효화 (다음 라벨 갱신 때 흑색 유지)
             self._last_label_color = "stealth"
         else:
+            # 마진·간격·사이즈 복원
+            self._root_layout.setContentsMargins(self._orig_root_margins)
+            self._root_layout.setSpacing(self._orig_root_spacing)
+            self._bar_layout.setContentsMargins(self._orig_bar_margins)
+            self._bar_layout.setSpacing(self._orig_bar_spacing)
+            self.setMinimumSize(self._orig_min_size)
+            self.setMaximumSize(self._orig_max_size)
+
+            # 위젯들 복원
             for w in self._hideables:
                 w.show()
             self.tabs.show()
+
             self.code_input.setMaximumWidth(100)
+            self.code_input.setMinimumWidth(0)
             self.code_input.setStyleSheet("")
             self.name_label.setStyleSheet(
                 "font-weight: bold; padding: 0 12px; color: #2266cc;"
@@ -1854,7 +1896,10 @@ class DataChartWindow(QMainWindow):
                 "background-color: #f5f5f5; border-radius: 4px;"
             )
             self.btn_stealth.setText("📕")
+            self.btn_stealth.setMaximumWidth(32)
+            self.btn_stealth.setMinimumWidth(0)
             self.setWindowTitle("DataChart v2 — 종합 데이터 차트")
+
             if self._normal_geometry:
                 self.restoreGeometry(self._normal_geometry)
             self._last_label_color = None  # 다음 갱신 때 색상 재적용
