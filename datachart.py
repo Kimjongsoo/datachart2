@@ -1727,6 +1727,9 @@ class DataChartWindow(QMainWindow):
         self._kis_ws = KisRealtimeWorker()
         self._kis_ws.tick.connect(self._on_realtime_tick)
         self._kis_ws.status.connect(lambda s: print(f"[KIS WS] {s}"))
+        # 렌더 throttle 상태
+        self._last_chart_refresh = 0.0   # 마지막 차트 refresh 시각
+        self._last_label_color = None    # setStyleSheet 비용 회피용
 
         # 첫 로드
         self.load_all()
@@ -1776,21 +1779,29 @@ class DataChartWindow(QMainWindow):
                          minute=(n.minute // 5) * 5)
 
     def _on_realtime_tick(self, snap: dict) -> None:
-        """KIS WebSocket에서 체결 push 받을 때마다 호출. 가격 라벨 + 라이브 봉 갱신."""
+        """KIS WebSocket 체결 push 핸들러.
+        - 가격 라벨: 매 틱 즉시 갱신 (가벼움, 가장 즉각적인 시각 반응)
+        - 차트 라이브 봉: 200ms throttle로 렌더 큐 쌓이는 것 방지
+        """
         if snap.get("code") != self.code_input.text().strip():
             return
         try:
             price = float(snap["price"])
             change_pct = float(snap.get("change_rate") or 0.0)
-            color = "#cc0000" if change_pct >= 0 else "#0066cc"
-            self.price_label.setText(f"{price:,.0f}원  {change_pct:+.2f}%  ⚡LIVE")
+        except (KeyError, ValueError, TypeError):
+            return
+
+        # 가격 라벨 — 매 틱 갱신 (텍스트만, 색 바뀔 때만 setStyleSheet)
+        color = "#cc0000" if change_pct >= 0 else "#0066cc"
+        self.price_label.setText(f"{price:,.0f}원  {change_pct:+.2f}%  ⚡LIVE")
+        if color != self._last_label_color:
             self.price_label.setStyleSheet(
                 f"font-size: 18px; font-weight: bold; padding: 2px 10px; "
                 f"color: {color}; background-color: #fff8e1; border-radius: 4px;"
             )
-        except Exception:
-            return
-        # 5분봉 모드면 라이브 봉도 누적 갱신 (틱 단위라 더 정밀)
+            self._last_label_color = color
+
+        # 5분봉 모드면 라이브 봉 누적 (상태는 매 틱, 렌더는 throttle)
         if self.tf_combo.currentData() != "min5":
             return
         bar_start = self._bar_start_5min()
@@ -1808,6 +1819,12 @@ class DataChartWindow(QMainWindow):
             lb["close"] = price
             lb["volume"] = max(0, cum_vol - lb["volume_at_start"])
         self._last_kis_price = price
+
+        # 차트 렌더 throttle: 마지막 refresh로부터 200ms 이내면 skip
+        now = _time.time()
+        if now - self._last_chart_refresh < 0.2:
+            return
+        self._last_chart_refresh = now
         self._render_min5_with_live()
         try:
             fplt.refresh()
