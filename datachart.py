@@ -1845,6 +1845,11 @@ class DataChartWindow(QMainWindow):
         self.vol_ax = vol_w[0] if isinstance(vol_w, (list, tuple)) else vol_w
         self.vol_ax.setXLink(self.price_ax)  # X축 동기화
         self._format_y_axis_kmb(self.vol_ax, label_text="거래량 (주)")
+        # 좌상단에 "최대 거래량" 오버레이 — autoSIPrefix가 ticker를 어떻게 표시하든 사용자가 항상 명확히 인지
+        import pyqtgraph as _pg
+        self._vol_legend = _pg.TextItem(anchor=(0, 0), color="#666")
+        self._vol_legend.setParentItem(self.vol_ax.vb)
+        self._vol_legend.setPos(8, 8)
         self.axs_price = [self.price_ax, self.vol_ax]
         chart_split = QSplitter(Qt.Vertical)
         chart_split.setChildrenCollapsible(False)
@@ -2335,53 +2340,42 @@ class DataChartWindow(QMainWindow):
 
     @staticmethod
     def _format_y_axis_kmb(ax, label_text: str = "") -> None:
-        """Y축 tick 라벨을 K/M/B 약어로 + 단위 라벨 추가.
-        - 범위에 따라 자동 단위 선택 (5분봉 작은 값 → raw, 일봉 큰 값 → K/M)
-        - label_text: '거래량(주)', '(억원)' 같은 단위 표시 (axis 옆에 세로 텍스트)
+        """Y축에 단위 라벨만 설정. tick은 pyqtgraph 기본 + autoSIPrefix가 알아서 K/M 처리.
+        '거래량 (주)' 같은 라벨을 'text=거래량, units=주'로 분해해서 setLabel.
+        autoSIPrefix가 ON이면 axis 라벨이 자동으로 '(M주)' '(k주)'로 prefix 추가됨.
         """
-        def tick_strings(values, scale, spacing):
-            scale = scale or 1.0
-            out = []
-            for v in values:
-                actual = v * scale
-                absv = abs(actual)
-                if absv >= 1e9:
-                    out.append(f"{actual / 1e9:.1f}B")
-                elif absv >= 1e8:
-                    out.append(f"{actual / 1e6:.0f}M")        # 100M 이상: 정수
-                elif absv >= 1e6:
-                    out.append(f"{actual / 1e6:.1f}M")        # 1M~100M: 1자리
-                elif absv >= 1e5:
-                    out.append(f"{actual / 1e3:.0f}K")        # 100K~1M: 정수
-                elif absv >= 1e4:
-                    out.append(f"{actual / 1e3:.0f}K")        # 10K~100K: 정수
-                elif absv >= 1e3:
-                    out.append(f"{actual / 1e3:.1f}K")        # 1K~10K: 1자리 (1.5K)
-                elif absv >= 1:
-                    # 1~999: 천단위 콤마 (5분봉처럼 작은 거래량 가독성)
-                    out.append(f"{int(actual):,}")
-                elif absv > 0:
-                    out.append(f"{actual:.2f}")
-                else:
-                    out.append("0")
-            return out
+        import re
+        m = re.match(r"^(.*?)\s*\(([^)]+)\)\s*$", label_text or "")
+        if m:
+            text = m.group(1).strip()
+            units = m.group(2).strip()
+        else:
+            text = label_text
+            units = ""
         for axis_name in ("right", "left"):
             try:
                 axis = ax.getAxis(axis_name)
                 if axis is None:
                     continue
-                axis.tickStrings = tick_strings
-                try:
-                    axis.enableAutoSIPrefix(False)
-                except Exception:
-                    pass
-                if label_text:
-                    try:
-                        axis.setLabel(text=label_text)
-                    except Exception:
-                        pass
+                axis.enableAutoSIPrefix(True)
+                if units:
+                    axis.setLabel(text=text, units=units)
+                elif text:
+                    axis.setLabel(text=text)
             except Exception:
                 pass
+
+    @staticmethod
+    def _fmt_kmb(v: float) -> str:
+        """숫자를 K/M/B 약어로 포맷 (절대값 기반)."""
+        absv = abs(v)
+        if absv >= 1e9:
+            return f"{v / 1e9:.1f}B"
+        if absv >= 1e6:
+            return f"{v / 1e6:.1f}M"
+        if absv >= 1e3:
+            return f"{v / 1e3:.0f}K"
+        return f"{int(v):,}"
 
     # --- 차트 공통 그리기 헬퍼 -----------------------------------------
     # 4종 이동평균 사양: (기간, 색, 두께) — 20만 강조, 나머지는 얇게
@@ -2399,8 +2393,17 @@ class DataChartWindow(QMainWindow):
             if len(d) >= period:
                 fplt.plot(d["close"].rolling(period).mean(),
                           ax=self.price_ax, color=color, width=w)
-        # 거래량 raw 데이터 그대로 (Y축 라벨은 K/M으로 자동 포맷됨)
+        # 거래량 raw 데이터 그대로 (autoSIPrefix가 axis 라벨에 prefix 추가)
         fplt.volume_ocv(d[["open", "close", "volume"]], ax=self.vol_ax)
+        # 좌상단 "최대 거래량" 오버레이 갱신
+        try:
+            max_vol = float(d["volume"].max() or 0)
+            avg_vol = float(d["volume"].mean() or 0)
+            self._vol_legend.setText(
+                f"최대 {self._fmt_kmb(max_vol)}주  ·  평균 {self._fmt_kmb(avg_vol)}주"
+            )
+        except Exception:
+            pass
         # 일목균형표 (옵션)
         if self.cb_ichimoku.isChecked():
             self._draw_ichimoku(d)

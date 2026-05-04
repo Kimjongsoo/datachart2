@@ -11,23 +11,26 @@
 
 ### 📈 차트 탭
 - 캔들 + **MA 4종**(5/20/112/224, 색상별 구분)
-- **거래량** (만주 단위 자동 변환)
-- **일목균형표** 토글: 선행스팬1·2 점선 표시 (HTS 표준 9/26/52/26 파라미터)
+- **거래량** raw 데이터 + Y축 자동 K/M/B 단위 (5분봉은 raw 콤마, 일봉은 K/M)
+- **단위 라벨** Y축에 세로 표시: "거래량 (주)", "(억원)" 등
+- **일목균형표** 토글: 선행스팬1·2를 빨강/파랑 점선 표시 (HTS 표준 9/26/52/26 파라미터, **거래일 기준 26봉 forward**)
 - **지수 비교 오버레이**: 코스피·코스피 200·KRX 300·KRX 100·코스닥·코스닥 150 정규화 라인
 - **현재가 박스**: 빨강(상승)/파랑(하락) 가로 점선 + 우측 라벨
 
 ### 📊 주기 선택
 | 주기 | 출처 | 비고 |
 |---|---|---|
-| 일봉 | KRX OpenAPI / pykrx | 1년치 |
+| 일봉 | KRX OpenAPI / pykrx + 오늘 KIS 합성 | 1년치, **장 외 시간에도 오늘 봉 표시** |
 | 주봉 | 일봉 → W-FRI 리샘플 | |
-| 5분봉 | Yahoo Finance + KIS 갭보강 | 60일치, 진짜 OHLC |
+| 5분봉 | Yahoo Finance + KIS 분봉 갭보강 + WS 라이브 봉 | 60일치, 진짜 OHLC, 라벨 좌측(13:30~13:34 = 13:30) |
 
 ### ⚡ 실시간 LIVE (KIS Developer 키 등록 시)
 - **WebSocket H0STCNT0** 체결가 푸시 — 정규장 09:00~15:30 KST에 자동 연결
-- 가격 라벨이 **체결 발생 즉시** 깜빡이며 갱신 (REST 폴링 아님)
-- 5분봉 모드: 진행 중인 봉이 **틱 단위로 꿈틀거림**
+- 가격 라벨이 **체결 발생 즉시** 갱신 (`⚡LIVE` 태그)
+- 5분봉 모드: 진행 중인 봉이 **틱 단위로 꿈틀거림** (200ms throttle)
+  - 봉당 OHL은 체결가만으로 누적 (KIS 일봉 OHL과 분리)
 - 일/주봉 모드: 오늘 봉을 KIS 일봉 OHL로 합성
+  - **장 외 시간에도** KIS REST `inquire-price`로 오늘 OHLC 합성 → 마지막 봉이 4/30이 아닌 오늘로 표시
 
 ### 💰 수급 탭
 - 외국인·기관·개인 **누적 순매수** (60일치, Naver frgn 스크래핑)
@@ -49,8 +52,9 @@
 | 데이터 종류 | 1순위 | 2순위 | 3순위 |
 |---|---|---|---|
 | **OHLCV 일봉** | KRX OpenAPI (`sto/stk_bydd_trd`) | pykrx 스크래핑 | — |
+| **오늘 일봉 (장 외)** | KIS REST (`inquire-price` 스냅샷 OHLC) | — | (안 그려짐) |
 | **5분봉 history** | Yahoo Finance (`yfinance`) | Naver siseJson 1분 → 5분 합성 | — |
-| **5분봉 오늘 갭** | KIS REST (`inquire-time-itemchartprice`) | (yfinance 그대로) | — |
+| **5분봉 오늘 갭(~15분)** | KIS REST (`inquire-time-itemchartprice`) | (yfinance 그대로) | — |
 | **실시간 체결가** | **KIS WebSocket (`H0STCNT0`)** | KIS REST `inquire-price` (2초 폴링) | OHLCV 마지막 종가 (정적) |
 | **지수 (KOSPI 시리즈)** | KRX OpenAPI (`idx/krx_dd_trd`, `idx/kospi_dd_trd`, `idx/kosdaq_dd_trd`) | — | — |
 | **외국인·기관 일별** | (KRX 투자자별 거래실적 신청 시) | Naver frgn 스크래핑 | — |
@@ -144,7 +148,7 @@ python datachart.py
 │  │  │ 가격 (캔들 + MA + 일목 + 비교)    │           │  │
 │  │  └──────────────────────────────────┘           │  │
 │  │  ┌──────────────────────────────────┐           │  │
-│  │  │ 거래량 (만주)                     │           │  │
+│  │  │ 거래량 (raw + Y축 자동 K/M)        │           │  │
 │  │  └──────────────────────────────────┘           │  │
 │  └───────────────────────────────────────────────────┘  │
 │                                                         │
@@ -166,6 +170,8 @@ KisRealtimeWorker (별도 thread) ──[Signal]─→ DataChartWindow
 - **캐시**: DuckDB 로컬 (`datachart.duckdb`, 자동 생성, git ignore)
 - **실시간**: `websockets.sync.client` + `threading.Thread` + Qt `Signal`
 - **HTTP**: stdlib `urllib` + `yfinance`
+- **timezone**: finplot `display_timezone = UTC` 고정으로 KST naive 데이터를 그대로 표시 (X축 +9h 오류 회피)
+- **Y축 포맷**: pyqtgraph `AxisItem.tickStrings` monkey-patch로 K/M/B 자동 변환 + 단위 라벨
 - **콘솔 노이즈 차단**: `_PykrxNoiseFilter`로 stdout/stderr 필터링 (pykrx, Qt DPI 등)
 
 ---
@@ -191,6 +197,7 @@ datachart2/
 - **5분봉 60일 한도**: yfinance interval='5m'은 max 60일. 더 긴 history는 KIS daily-itemchartprice 추가 필요.
 - **호가창 미지원**: 현재는 체결가(`H0STCNT0`)만. 호가(`H0STASP0`) 추가 가능.
 - **KRX 일부 endpoint 인증 필요**: pykrx의 투자자/펀더멘털 endpoint는 KRX 비공개 API라 빈 결과. → Naver/yfinance 자동 폴백.
+- **구름대(Kumo) 빗금 미지원**: pyqtgraph `FillBetweenItem`이 Qt brush 패턴(BDiagPattern 등)을 무시해 빗금 fill 불가. 대신 선행스팬1·2 라인을 점선으로 표시.
 
 ---
 
