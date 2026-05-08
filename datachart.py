@@ -115,9 +115,9 @@ from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
 import threading as _threading
 import time as _time
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QLabel,
-    QLineEdit, QMainWindow, QPushButton, QSplitter, QTabWidget, QVBoxLayout,
-    QWidget,
+    QApplication, QCheckBox, QComboBox, QFormLayout, QHBoxLayout,
+    QHeaderView, QLabel, QLineEdit, QMainWindow, QPushButton, QSplitter,
+    QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 import finplot as fplt
 # pykrx는 import 시점에도 KRX_ID/PW 미설정 메시지를 print하므로 silence 안에서 import
@@ -141,6 +141,27 @@ fplt.volume_bull_color = "#ff9988"
 fplt.volume_bull_body_color = "#ff9988"
 fplt.volume_bear_color = "#88aaff"
 fplt.volume_bear_body_color = "#88aaff"
+
+# --- X축 시간 ticks: 5분봉에서도 줌 레벨에 따라 2h/3h/6h 단위 표시 ----------
+# 기본 finplot은 3일 이상 보이면 곧장 일자(D) ticks로 전환 → 분봉에서 시간 정보 사라짐.
+# 'days' threshold를 7일로 올리고, 그 사이를 6h/3h/2h ticks로 채움.
+fplt.time_splits = [
+    ('years',    63072000, 'YS',    4),
+    ('months',    7776000, 'MS',   10),
+    ('weeks',     1814400, 'W-MON',10),
+    ('days',       604800, 'D',    10),   # > 7일: 날짜만
+    ('hours',      259200, '6h',   16),   # 3~7일: 6시간
+    ('hours',       86400, '3h',   16),   # 1~3일: 3시간
+    ('hours',       32400, '2h',   16),   # 9시간~1일: 2시간
+    ('hours',       10800, 'h',    16),   # 3~9시간: 1시간
+    ('minutes',      2700, '15min',16),
+    ('minutes',       900, '5min', 16),
+    ('minutes',       180, 'min',  16),
+    ('seconds',        45, '15s',  19),
+    ('seconds',        15, '5s',   19),
+    ('seconds',         3, 's',    19),
+    ('milliseconds',    0, 'ms',   23),
+]
 
 # --- 설정 -----------------------------------------------------------------
 DB_PATH = Path(__file__).parent / "datachart.duckdb"
@@ -270,6 +291,51 @@ SCHEMA_SQL = [
         PRIMARY KEY (code)
     )
     """,
+    """
+    -- 종목코드 ↔ 종목명 마스터 (자동완성용)
+    CREATE TABLE IF NOT EXISTS ticker_master (
+        code   VARCHAR PRIMARY KEY,
+        name   VARCHAR,
+        market VARCHAR,
+        updated_at TIMESTAMP
+    )
+    """,
+]
+
+
+# 사전 시드: KRX 시총 상위 + 자주 거래되는 종목 (앱 첫 실행 시 즉시 자동완성 가능)
+TICKER_SEED = [
+    ("005930", "삼성전자"), ("000660", "SK하이닉스"), ("373220", "LG에너지솔루션"),
+    ("207940", "삼성바이오로직스"), ("005380", "현대차"), ("006400", "삼성SDI"),
+    ("051910", "LG화학"), ("000270", "기아"), ("035420", "NAVER"),
+    ("035720", "카카오"), ("105560", "KB금융"), ("055550", "신한지주"),
+    ("012330", "현대모비스"), ("028260", "삼성물산"), ("068270", "셀트리온"),
+    ("005490", "POSCO홀딩스"), ("003670", "포스코퓨처엠"), ("066570", "LG전자"),
+    ("003550", "LG"), ("015760", "한국전력"), ("032830", "삼성생명"),
+    ("017670", "SK텔레콤"), ("034730", "SK"), ("018260", "삼성에스디에스"),
+    ("009150", "삼성전기"), ("011200", "HMM"), ("033780", "KT&G"),
+    ("030200", "KT"), ("086790", "하나금융지주"), ("316140", "우리금융지주"),
+    ("000810", "삼성화재"), ("024110", "기업은행"), ("259960", "크래프톤"),
+    ("352820", "하이브"), ("377300", "카카오페이"), ("323410", "카카오뱅크"),
+    ("042700", "한미반도체"), ("000720", "현대건설"), ("097950", "CJ제일제당"),
+    ("180640", "한진칼"), ("011170", "롯데케미칼"), ("251270", "넷마블"),
+    ("036570", "엔씨소프트"), ("293490", "카카오게임즈"), ("112040", "위메이드"),
+    ("009830", "한화솔루션"), ("000880", "한화"), ("489790", "한화비전"),
+    ("272210", "한화시스템"), ("079550", "LIG넥스원"), ("047810", "한국항공우주"),
+    ("064350", "현대로템"), ("042660", "한화오션"), ("329180", "HD현대중공업"),
+    ("267260", "HD현대일렉트릭"), ("241560", "두산밥캣"), ("034020", "두산에너빌리티"),
+    ("000150", "두산"), ("267250", "HD현대"), ("010140", "삼성중공업"),
+    ("009540", "HD한국조선해양"), ("010950", "S-Oil"), ("096770", "SK이노베이션"),
+    ("078930", "GS"), ("004020", "현대제철"), ("001040", "CJ"),
+    ("139480", "이마트"), ("282330", "BGF리테일"), ("004170", "신세계"),
+    ("071050", "한국금융지주"), ("006800", "미래에셋증권"), ("016360", "삼성증권"),
+    ("088980", "맥쿼리인프라"),
+    # KOSDAQ 상위
+    ("247540", "에코프로비엠"), ("086520", "에코프로"), ("196170", "알테오젠"),
+    ("091990", "셀트리온헬스케어"), ("066970", "엘앤에프"), ("028300", "HLB"),
+    ("058470", "리노공업"), ("357780", "솔브레인"), ("145020", "휴젤"),
+    ("214150", "클래시스"), ("293480", "하나마이크론"), ("277810", "레인보우로보틱스"),
+    ("095340", "ISC"), ("141080", "리가켐바이오"),
 ]
 
 
@@ -1227,6 +1293,105 @@ def fetch_minute_kis_today(code: str, max_bars: int = 120) -> pd.DataFrame:
     return df
 
 
+def kis_program_trade_by_stock_daily(code: str) -> pd.DataFrame:
+    """KIS 종목별 프로그램매매추이(일별) — TR_ID FHPPG04650201.
+    URL: /uapi/domestic-stock/v1/quotations/program-trade-by-stock-daily
+    실전 KIS 키만 동작 (모의 미지원).
+
+    반환 DataFrame: date, arb_buy, arb_sell, arb_net, nonarb_buy, nonarb_sell, nonarb_net, total_net
+    (수량 = 주식수, 부호: + 매수 우위, − 매도 우위)
+    필드명을 못 찾으면 빈 DataFrame 반환 (KIS 응답 구조가 변경된 경우).
+    """
+    token = kis_get_token()
+    appkey, appsecret, base = _kis_resolve()
+    if not token or not appkey or not appsecret:
+        return pd.DataFrame()
+    # 모의(VTS)는 미지원
+    if "openapivts" in base:
+        return pd.DataFrame()
+    headers = {
+        "authorization": f"Bearer {token}",
+        "appkey": appkey.strip(),
+        "appsecret": appsecret.strip(),
+        "tr_id": "FHPPG04650201",
+        "Content-Type": "application/json",
+    }
+    # KIS 프로그램매매 일별 API 는 FID_INPUT_DATE_1 (조회 기준일) 필수.
+    # 보통 오늘 날짜 넣으면 그 이전 N일치(약 60일)를 묶어서 응답.
+    today_yyyymmdd = _dt.now().strftime("%Y%m%d")
+    params = {
+        "FID_COND_MRKT_DIV_CODE": "J",
+        "FID_INPUT_ISCD": code,
+        "FID_INPUT_DATE_1": today_yyyymmdd,
+    }
+    url = f"{base}/uapi/domestic-stock/v1/quotations/program-trade-by-stock-daily?" + _urlparse.urlencode(params)
+    try:
+        req = _urlreq.Request(url, headers=headers)
+        with _urlreq.urlopen(req, timeout=8) as r:
+            data = _json.loads(r.read().decode("utf-8"))
+    except Exception as e:
+        print(f"[KIS 프로그램매매] 호출 실패: {e}")
+        return pd.DataFrame()
+
+    # KIS API 응답 구조: output/output1/output2 중 list 인 곳을 찾아 사용
+    out = None
+    for k in ("output2", "output1", "output"):
+        v = data.get(k)
+        if isinstance(v, list) and v:
+            out = v
+            break
+    if not out:
+        # 권한 부족·키 미발급 시 메시지 흘려보내기
+        msg = data.get("msg1") or data.get("msg_cd") or ""
+        if msg:
+            print(f"[KIS 프로그램매매] 응답 메시지: {msg}")
+        return pd.DataFrame()
+
+    # 첫 응답 구조 진단 — 한 번만 출력 (필드명 확인용)
+    if not getattr(kis_program_trade_by_stock_daily, "_logged", False):
+        print(f"[KIS 프로그램매매] 응답 키 샘플: {list(out[0].keys())[:20]}")
+        kis_program_trade_by_stock_daily._logged = True
+
+    # 후보 필드명 (KIS 명세에서 흔히 쓰는 변형 모두 대응)
+    def pick(row, *names):
+        for n in names:
+            if n in row and row[n] not in ("", None):
+                return _krx_num(row[n])
+        return None
+
+    rows = []
+    for row in out:
+        d_str = pick(row, "stck_bsop_date", "bsop_date", "stck_bsop_dt") or 0
+        d_str = str(int(d_str)) if d_str else ""
+        if len(d_str) != 8:
+            continue
+        try:
+            d = _dt.strptime(d_str, "%Y%m%d").date()
+        except ValueError:
+            continue
+        # 차익(smtm) / 비차익(smtn) — 그리고 흔히 쓰이는 다른 약어들도 시도
+        arb_buy  = pick(row, "whol_smtm_agrm_qty", "smtm_agrm_qty", "stck_arbt_pchs_qty", "arbt_pchs_qty")
+        arb_sell = pick(row, "whol_smtm_seln_qty", "smtm_seln_qty", "stck_arbt_seln_qty", "arbt_seln_qty")
+        arb_net  = pick(row, "whol_smtm_ntby_qty", "smtm_ntby_qty", "stck_arbt_ntby_qty", "arbt_ntby_qty")
+        nb_buy   = pick(row, "whol_smtn_agrm_qty", "smtn_agrm_qty", "stck_nabt_pchs_qty", "nabt_pchs_qty")
+        nb_sell  = pick(row, "whol_smtn_seln_qty", "smtn_seln_qty", "stck_nabt_seln_qty", "nabt_seln_qty")
+        nb_net   = pick(row, "whol_smtn_ntby_qty", "smtn_ntby_qty", "stck_nabt_ntby_qty", "nabt_ntby_qty")
+        total    = pick(row, "whol_ntby_qty", "stck_prgr_ntby_qty", "prgr_ntby_qty")
+        rows.append({
+            "date": d,
+            "arb_buy":     int(arb_buy or 0),
+            "arb_sell":    int(arb_sell or 0),
+            "arb_net":     int(arb_net or 0),
+            "nonarb_buy":  int(nb_buy or 0),
+            "nonarb_sell": int(nb_sell or 0),
+            "nonarb_net":  int(nb_net or 0),
+            "total_net":   int(total if total is not None else (arb_net or 0) + (nb_net or 0)),
+        })
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
+
+
 def kis_get_approval_key() -> str | None:
     """KIS WebSocket용 approval_key 발급. REST OAuth와는 별개의 키.
     24시간 유효, 발급 횟수 제한 있어 모듈 캐시.
@@ -1567,9 +1732,9 @@ def resample_to_weekly(df_daily: pd.DataFrame) -> pd.DataFrame:
 _NAVER_FRGN_URL = "https://finance.naver.com/item/frgn.naver?code={code}&page={page}"
 
 
-def fetch_naver_investor_flow(code: str, pages: int = 3) -> pd.DataFrame:
+def fetch_naver_investor_flow(code: str, pages: int = 6) -> pd.DataFrame:
     """Naver frgn.naver에서 외국인/기관 일별 순매수(주) 스크래핑.
-    페이지당 약 20행, pages=3이면 60일치. EUC-KR 인코딩."""
+    페이지당 약 20행, pages=6이면 약 120 거래일(~6개월). EUC-KR 인코딩."""
     con = duckdb.connect(str(DB_PATH))
     try:
         end = _dt.now().date()
@@ -1586,7 +1751,14 @@ def fetch_naver_investor_flow(code: str, pages: int = 3) -> pd.DataFrame:
         ).df()
         if not cached.empty:
             latest = pd.to_datetime(cached["date"].max()).date()
-            if (end - latest).days <= CACHE_FRESH_DAYS:
+            # 직전 영업일까지 데이터가 들어있을 때만 캐시 재사용.
+            # (5일 캐시는 주말/연휴 직후 빈데이터 그대로 반환되는 문제 → 평일에 4/29 마지막 같은 현상)
+            today = pd.Timestamp.now().normalize()
+            last_bday = (today - pd.tseries.offsets.BDay(1)).date() if today.weekday() < 5 else today.date()
+            # 평일 16시 이후엔 오늘 자체가 last_bday 후보
+            if pd.Timestamp.now().hour >= 16 and today.weekday() < 5:
+                last_bday = today.date()
+            if latest >= last_bday:
                 return cached.reset_index(drop=True)
 
         rows = []
@@ -1660,6 +1832,101 @@ def get_name(code: str) -> str:
         return code
 
 
+# --- 종목 자동완성 (코드 ↔ 이름 매핑) -----------------------------------
+def seed_ticker_master() -> None:
+    """앱 시작 시 한 번 호출 — 시드 리스트와 기존 cache 의 이름을 ticker_master에 머지."""
+    con = duckdb.connect(str(DB_PATH))
+    try:
+        # 1) 하드코딩 시드 (즉시 자동완성 가능)
+        seed_df = pd.DataFrame(TICKER_SEED, columns=["code", "name"])
+        seed_df["market"] = ""
+        seed_df["updated_at"] = pd.Timestamp.now()
+        con.execute(
+            "INSERT OR IGNORE INTO ticker_master "
+            "(code, name, market, updated_at) "
+            "SELECT code, name, market, updated_at FROM seed_df"
+        )
+        # 2) naver_snapshot 의 이름들도 끌어와 cache 보강
+        try:
+            con.execute(
+                "INSERT OR IGNORE INTO ticker_master (code, name, market, updated_at) "
+                "SELECT code, name, '', fetched_at FROM naver_snapshot WHERE name IS NOT NULL"
+            )
+        except Exception:
+            pass
+    finally:
+        con.close()
+
+
+def upsert_ticker(code: str, name: str) -> None:
+    """load_all 등에서 종목 조회 성공 시 호출 — ticker_master 갱신."""
+    if not code or not name or len(code) != 6:
+        return
+    con = duckdb.connect(str(DB_PATH))
+    try:
+        con.execute(
+            "INSERT OR REPLACE INTO ticker_master (code, name, market, updated_at) "
+            "VALUES (?, ?, '', ?)",
+            [code, name, _dt.now()],
+        )
+    finally:
+        con.close()
+
+
+def load_all_tickers() -> list[tuple[str, str]]:
+    """ticker_master 전체 (code, name) 반환. 자동완성 model 채우기용."""
+    con = duckdb.connect(str(DB_PATH))
+    try:
+        rows = con.execute(
+            "SELECT code, name FROM ticker_master WHERE name IS NOT NULL ORDER BY name"
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+    finally:
+        con.close()
+
+
+def resolve_ticker(query: str) -> str | None:
+    """쿼리(코드 또는 이름)를 6자리 코드로 변환.
+    - 6자리 숫자: 그대로 반환
+    - "이름 (코드)" 형식: 괄호 안 코드 추출
+    - 텍스트: ticker_master 정확 → 접두 → 부분 일치 순서
+    - 매치 없음: None
+    """
+    q = (query or "").strip()
+    if not q:
+        return None
+    if q.isdigit() and len(q) == 6:
+        return q
+    # "한화비전 (489790)" 같은 completer 출력 형식에서 코드 추출
+    m = _re.search(r"\((\d{6})\)", q)
+    if m:
+        return m.group(1)
+    # 괄호 / 추가 정보 떼고 이름만 추출
+    name_only = _re.sub(r"\s*\([^)]*\)\s*", "", q).strip()
+    if not name_only:
+        return None
+    con = duckdb.connect(str(DB_PATH))
+    try:
+        r = con.execute("SELECT code FROM ticker_master WHERE name = ?", [name_only]).fetchone()
+        if r:
+            return r[0]
+        r = con.execute(
+            "SELECT code FROM ticker_master WHERE name LIKE ? ORDER BY length(name) LIMIT 1",
+            [name_only + "%"],
+        ).fetchone()
+        if r:
+            return r[0]
+        r = con.execute(
+            "SELECT code FROM ticker_master WHERE name LIKE ? ORDER BY length(name) LIMIT 1",
+            ["%" + name_only + "%"],
+        ).fetchone()
+        if r:
+            return r[0]
+        return None
+    finally:
+        con.close()
+
+
 # --- 일목균형표 (Ichimoku Kinko Hyo) -------------------------------------
 def compute_ichimoku(df: pd.DataFrame, conv: int = 9, base: int = 26,
                      span_b_period: int = 52, shift: int = 26) -> dict:
@@ -1715,6 +1982,32 @@ def compute_ichimoku(df: pd.DataFrame, conv: int = 9, base: int = 26,
             "senkou_a": senkou_a, "senkou_b": senkou_b, "chikou": chikou}
 
 
+# --- RSI / MACD ----------------------------------------------------------
+def compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:
+    """Wilder's RSI. close: 가격 시리즈. 0~100 값.
+    >70 과매수, <30 과매도, 50 중립. 다이버전스 판독용."""
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
+    # Wilder smoothing = EMA with alpha=1/period
+    avg_gain = gain.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
+    avg_loss = loss.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
+    rs = avg_gain / avg_loss.replace(0, pd.NA)
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+
+def compute_macd(close: pd.Series, fast: int = 12, slow: int = 26,
+                 signal: int = 9) -> dict:
+    """MACD(12/26/9). 반환 dict: macd, signal, histogram (모두 pandas Series)."""
+    ema_fast = close.ewm(span=fast, adjust=False).mean()
+    ema_slow = close.ewm(span=slow, adjust=False).mean()
+    macd = ema_fast - ema_slow
+    signal_line = macd.ewm(span=signal, adjust=False).mean()
+    hist = macd - signal_line
+    return {"macd": macd, "signal": signal_line, "histogram": hist}
+
+
 # --- GUI 헬퍼 -------------------------------------------------------------
 def _as_list(axes_obj) -> list:
     """finplot.create_plot_widget 반환값이 단일/튜플/리스트 다 다를 수 있어 정규화."""
@@ -1760,9 +2053,31 @@ class DataChartWindow(QMainWindow):
         bar.addWidget(self._lbl_code)
         self._hideables.append(self._lbl_code)
         self.code_input = QLineEdit(DEFAULT_CODE)
-        self.code_input.setMaximumWidth(100)
+        self.code_input.setMaximumWidth(160)  # 한글 종목명 표시용으로 조금 더 넓게
+        self.code_input.setPlaceholderText("종목명 또는 6자리 코드")
         self.code_input.returnPressed.connect(self.load_all)
+        # 클릭했을 때만 포커스 획득 (Tab 순환·자동 포커스에 잡히지 않게)
+        self.code_input.setFocusPolicy(Qt.ClickFocus)
         bar.addWidget(self.code_input)
+        # 자동완성 — ticker_master에서 종목명 검색
+        from PySide6.QtWidgets import QCompleter
+        from PySide6.QtCore import QStringListModel
+        seed_ticker_master()  # 초기 시드 + 기존 cache 머지
+        self._completer_model = QStringListModel()
+        self._completer = QCompleter(self._completer_model, self)
+        self._completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self._completer.setFilterMode(Qt.MatchContains)
+        self._completer.setMaxVisibleItems(10)
+        # 사용자 선택 시: "한화비전 (489790)" → 코드만 추출 후 즉시 load
+        def _on_completer_activated(text: str) -> None:
+            import re as _re_local
+            m = _re_local.search(r"\((\d{6})\)", text)
+            if m:
+                self.code_input.setText(m.group(1))
+                self.load_all()
+        self._completer.activated[str].connect(_on_completer_activated)
+        self.code_input.setCompleter(self._completer)
+        self._refresh_completer_model()
 
         self._load_btn = QPushButton("불러오기")
         self._load_btn.clicked.connect(self.load_all)
@@ -1796,9 +2111,25 @@ class DataChartWindow(QMainWindow):
         # 일목균형표 토글
         self.cb_ichimoku = QCheckBox("일목균형표")
         self.cb_ichimoku.setToolTip("전환선(9)·기준선(26)·선행스팬1·2(26봉 forward)·후행스팬(26봉 backward)")
-        self.cb_ichimoku.stateChanged.connect(self._on_timeframe_changed)
+        self.cb_ichimoku.stateChanged.connect(self._on_ichimoku_toggled)
         bar.addWidget(self.cb_ichimoku)
         self._hideables.append(self.cb_ichimoku)
+
+        # RSI 토글 (기본 ON)
+        self.cb_rsi = QCheckBox("RSI")
+        self.cb_rsi.setToolTip("RSI(14) — Wilder smoothing. 70 과매수 / 30 과매도 / 50 중립")
+        self.cb_rsi.setChecked(True)
+        self.cb_rsi.stateChanged.connect(self._on_rsi_toggled)
+        bar.addWidget(self.cb_rsi)
+        self._hideables.append(self.cb_rsi)
+
+        # MACD 토글 (기본 ON)
+        self.cb_macd = QCheckBox("MACD")
+        self.cb_macd.setToolTip("MACD(12/26/9) — EMA12 − EMA26, signal=EMA9, histogram=차이")
+        self.cb_macd.setChecked(True)
+        self.cb_macd.stateChanged.connect(self._on_macd_toggled)
+        bar.addWidget(self.cb_macd)
+        self._hideables.append(self.cb_macd)
 
         # 지수 비교 (KRX OpenAPI 승인된 서비스 사용)
         self._lbl_cmp = QLabel("비교")
@@ -1825,10 +2156,21 @@ class DataChartWindow(QMainWindow):
         # 스텔스 모드 토글 (회사에서 몰래 보기용)
         self.btn_stealth = QPushButton("📕")
         self.btn_stealth.setCheckable(True)
-        self.btn_stealth.setToolTip("스텔스 모드: 종목명+가격만 흑색 작게 (다시 누르면 복원)")
+        self.btn_stealth.setToolTip("스텔스 모드: 종목명+가격만 흑색 작게 (단축키: A)")
         self.btn_stealth.setMaximumWidth(32)
         self.btn_stealth.clicked.connect(self._toggle_stealth)
         bar.addWidget(self.btn_stealth)
+
+        # 화면 캡쳐 버튼 (단축키 C)
+        self.btn_capture = QPushButton("📋")
+        self.btn_capture.setToolTip("화면 캡쳐 → 클립보드 (Ctrl+V로 AI에 붙여넣기, 단축키: C)")
+        self.btn_capture.setMaximumWidth(32)
+        self.btn_capture.clicked.connect(self._capture_to_clipboard)
+        bar.addWidget(self.btn_capture)
+        self._hideables.append(self.btn_capture)
+        # 단축키 A — 입력칸 포커스면 무시. QShortcut 대신 eventFilter로 처리
+        # (QShortcut은 QLineEdit에서 키를 가로채는 문제가 있음)
+        QApplication.instance().installEventFilter(self)
 
         root.addLayout(bar)
         self._stealth_on = False
@@ -1838,36 +2180,81 @@ class DataChartWindow(QMainWindow):
         self.tabs = QTabWidget()
         root.addWidget(self.tabs, stretch=1)
 
-        # 탭 1: 캔들차트 — 가격/거래량을 별개 plot widget으로 분리, QSplitter로 쌓고 X축 연동
+        # 탭 1: 캔들차트 — 가격/거래량/RSI/MACD를 별개 plot widget으로 분리, QSplitter로 쌓고 X축 연동
         price_w = fplt.create_plot_widget(master=self, rows=1, init_zoom_periods=120)
         vol_w = fplt.create_plot_widget(master=self, rows=1, init_zoom_periods=120)
+        rsi_w = fplt.create_plot_widget(master=self, rows=1, init_zoom_periods=120)
+        macd_w = fplt.create_plot_widget(master=self, rows=1, init_zoom_periods=120)
         self.price_ax = price_w[0] if isinstance(price_w, (list, tuple)) else price_w
         self.vol_ax = vol_w[0] if isinstance(vol_w, (list, tuple)) else vol_w
-        self.vol_ax.setXLink(self.price_ax)  # X축 동기화
-        self._format_y_axis_kmb(self.vol_ax, label_text="거래량 (주)")
-        # 좌상단에 "최대 거래량" 오버레이 — autoSIPrefix가 ticker를 어떻게 표시하든 사용자가 항상 명확히 인지
+        self.rsi_ax = rsi_w[0] if isinstance(rsi_w, (list, tuple)) else rsi_w
+        self.macd_ax = macd_w[0] if isinstance(macd_w, (list, tuple)) else macd_w
+        # X축 동기화
+        self.vol_ax.setXLink(self.price_ax)
+        self.rsi_ax.setXLink(self.price_ax)
+        self.macd_ax.setXLink(self.price_ax)
+        self._format_volume_y_axis(self.vol_ax)
+        # 좌상단에 "최대 거래량" 오버레이
         import pyqtgraph as _pg
         self._vol_legend = _pg.TextItem(anchor=(0, 0), color="#666")
         self._vol_legend.setParentItem(self.vol_ax.vb)
         self._vol_legend.setPos(8, 8)
-        self.axs_price = [self.price_ax, self.vol_ax]
+        # RSI 오버레이 (현재값 표시)
+        self._rsi_legend = _pg.TextItem(anchor=(0, 0), color="#666")
+        self._rsi_legend.setParentItem(self.rsi_ax.vb)
+        self._rsi_legend.setPos(8, 8)
+        # MACD 오버레이
+        self._macd_legend = _pg.TextItem(anchor=(0, 0), color="#666")
+        self._macd_legend.setParentItem(self.macd_ax.vb)
+        self._macd_legend.setPos(8, 8)
+        self.axs_price = [self.price_ax, self.vol_ax, self.rsi_ax, self.macd_ax]
         chart_split = QSplitter(Qt.Vertical)
         chart_split.setChildrenCollapsible(False)
         chart_split.addWidget(self.price_ax.ax_widget)
         chart_split.addWidget(self.vol_ax.ax_widget)
+        chart_split.addWidget(self.rsi_ax.ax_widget)
+        chart_split.addWidget(self.macd_ax.ax_widget)
         chart_split.setStretchFactor(0, 3)
         chart_split.setStretchFactor(1, 1)
-        chart_split.setSizes([600, 200])
+        chart_split.setStretchFactor(2, 1)
+        chart_split.setStretchFactor(3, 1)
+        chart_split.setSizes([500, 150, 150, 150])  # RSI/MACD 기본 visible
+        # RSI/MACD 패널 widget 핸들 보관 (토글 시 show/hide)
+        self._rsi_panel = self.rsi_ax.ax_widget
+        self._macd_panel = self.macd_ax.ax_widget
+        self._chart_split = chart_split
         self.tabs.addTab(chart_split, "차트")
 
-        # 탭 2: 수급(투자자별 누적 순매수)
+        # 탭 2: 수급 — 상단 누적 순매수 차트 + 하단 일별 테이블 (MTS 스타일)
         flow_axes = _as_list(fplt.create_plot_widget(
             master=self, rows=1, init_zoom_periods=120
         ))
         self.flow_ax = flow_axes[0]
         self.axs_flow = [self.flow_ax]
         self._format_y_axis_kmb(self.flow_ax, label_text="누적 순매수 (주)")
-        self.tabs.addTab(_wrap_ax(self.flow_ax), "수급")
+        # 일별 테이블
+        self.flow_table = QTableWidget()
+        self.flow_table.setColumnCount(10)
+        self.flow_table.setHorizontalHeaderLabels([
+            "날짜", "종가", "등락(%)", "거래량",
+            "외국인", "기관", "개인", "외국인 지분율(%)",
+            "프로그램 차익(주)", "프로그램 비차익(주)",
+        ])
+        self.flow_table.verticalHeader().setVisible(False)
+        self.flow_table.setAlternatingRowColors(True)
+        self.flow_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.flow_table.setSelectionBehavior(QTableWidget.SelectRows)
+        hh = self.flow_table.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.ResizeToContents)
+        hh.setStretchLastSection(True)
+        # 차트 + 테이블 분할
+        flow_split = QSplitter(Qt.Vertical)
+        flow_split.addWidget(self.flow_ax.ax_widget)
+        flow_split.addWidget(self.flow_table)
+        flow_split.setStretchFactor(0, 1)
+        flow_split.setStretchFactor(1, 2)  # 테이블이 더 넓게 (MTS 처럼 표 위주)
+        flow_split.setSizes([250, 500])
+        self.tabs.addTab(flow_split, "수급")
 
         # 탭 3: 펀더멘털 (요약 라벨 + PER/PBR 추이 차트)
         fund_widget = QWidget()
@@ -1942,6 +2329,24 @@ class DataChartWindow(QMainWindow):
 
         # 첫 로드
         self.load_all()
+        # 시작 시 메인 윈도우에 포커스 — code_input이 자동 포커스 못 갖게.
+        # 그래야 앱 켜자마자 A 단축키가 먹힘.
+        try:
+            self.setFocus()
+            self.code_input.clearFocus()
+        except Exception:
+            pass
+        # 기본값 = 스텔스 모드 ON (회사용). 데이터 로드 완료 직후 한 번 토글.
+        # show()가 끝난 뒤 geometry 가 잡히도록 짧게 큐잉.
+        QTimer.singleShot(0, self._enter_stealth_on_start)
+
+    def _enter_stealth_on_start(self) -> None:
+        try:
+            if not self.btn_stealth.isChecked():
+                self.btn_stealth.setChecked(True)
+                self._toggle_stealth()
+        except Exception:
+            pass
 
     def _check_krx_api_once(self) -> str:
         """앱 시작 시 KRX_API_KEY 한 번 진단 → 상태 문자열 반환."""
@@ -1970,6 +2375,59 @@ class DataChartWindow(QMainWindow):
         # 5분봉이 아닌 모드로 전환하면 라이브 봉 상태만 초기화
         if self.tf_combo.currentData() != "min5":
             self._live_bar = None
+
+    def _on_rsi_toggled(self, _state: int) -> None:
+        """RSI 패널 show/hide + 데이터 그리기."""
+        on = self.cb_rsi.isChecked()
+        self._rsi_panel.setVisible(on)
+        # split sizes 조정 — 켜질 때 적당히 공간 할당, 꺼질 때 0
+        self._adjust_chart_splits()
+        d = getattr(self, "_last_render_data", None)
+        if on and d is not None and not d.empty:
+            self._draw_rsi(d)
+        else:
+            self.rsi_ax.reset()
+
+    def _on_macd_toggled(self, _state: int) -> None:
+        """MACD 패널 show/hide + 데이터 그리기."""
+        on = self.cb_macd.isChecked()
+        self._macd_panel.setVisible(on)
+        self._adjust_chart_splits()
+        d = getattr(self, "_last_render_data", None)
+        if on and d is not None and not d.empty:
+            self._draw_macd(d)
+        else:
+            self.macd_ax.reset()
+
+    def _adjust_chart_splits(self) -> None:
+        """RSI/MACD 켜져있는 개수에 따라 splitter 비율 재조정."""
+        rsi_on = self.cb_rsi.isChecked()
+        macd_on = self.cb_macd.isChecked()
+        # 가격:거래량:RSI:MACD = 6:2:2:2 (켜진 것만 비율 차지)
+        sizes = [600, 200, 200 if rsi_on else 0, 200 if macd_on else 0]
+        try:
+            self._chart_split.setSizes(sizes)
+        except Exception:
+            pass
+
+    def _on_ichimoku_toggled(self, _state: int) -> None:
+        """일목균형표 토글 — 차트 전체를 다시 그리지 않고 senkou span 아이템만 추가/제거.
+        → reset() 안 하므로 zoom·pan 100% 보존, vol_ax X-link 깨질 일도 없음."""
+        d = getattr(self, "_last_render_data", None)
+        if self.cb_ichimoku.isChecked():
+            # ON: 데이터 캐시 있으면 그대로 senkou만 추가
+            if d is None or d.empty:
+                # 캐시 없으면 어쩔 수 없이 풀 재렌더 (앱 첫 진입 직후 케이스)
+                if hasattr(self, "_last_ohlcv") and self._last_ohlcv is not None:
+                    self._render_price(self._last_ohlcv, self.code_input.text().strip())
+                    fplt.refresh()
+                return
+            # 이미 켜져있던 잔여 아이템 제거 후 재그림 (중복 방지)
+            self._remove_ichimoku()
+            self._draw_ichimoku(d)
+        else:
+            # OFF: senkou 아이템만 제거
+            self._remove_ichimoku()
 
     @staticmethod
     def _is_market_open() -> bool:
@@ -2001,6 +2459,105 @@ class DataChartWindow(QMainWindow):
         # day (default)
         return n.replace(hour=0, minute=0, second=0, microsecond=0)
 
+    def eventFilter(self, obj, event):
+        """전역 단축키. QLineEdit 포커스 중에는 무시 (타이핑 방해 X).
+        - A : 스텔스 모드 토글
+        - D : 일봉 전환
+        - F : 5분봉 전환  (D 옆 키 — 한 손 빠른 전환)
+        - W : 주봉 전환
+        - [ : 창 투명도 ↓ (더 투명)
+        - ] : 창 투명도 ↑ (더 불투명)
+        - \\ : 투명도 100% 즉시 복원
+        """
+        from PySide6.QtCore import QEvent
+        if event.type() == QEvent.KeyPress and not event.modifiers():
+            fw = QApplication.focusWidget()
+            if isinstance(fw, QLineEdit):
+                return super().eventFilter(obj, event)
+            key = event.key()
+            if key == Qt.Key_A:
+                self.btn_stealth.toggle()
+                self._toggle_stealth()
+                return True
+            if key == Qt.Key_D:
+                self._set_timeframe("day")
+                return True
+            if key == Qt.Key_F:
+                self._set_timeframe("min5")
+                return True
+            if key == Qt.Key_W:
+                self._set_timeframe("week")
+                return True
+            if key == Qt.Key_BracketLeft:   # [
+                self._adjust_opacity(-0.05)
+                return True
+            if key == Qt.Key_BracketRight:  # ]
+                self._adjust_opacity(+0.05)
+                return True
+            if key == Qt.Key_Backslash:     # \
+                self.setWindowOpacity(1.0)
+                try:
+                    self.status.setText("투명도 100% (복원)")
+                except Exception:
+                    pass
+                return True
+            if key == Qt.Key_C:             # C : 화면 캡쳐 → 클립보드
+                self._capture_to_clipboard()
+                return True
+        return super().eventFilter(obj, event)
+
+    def _capture_to_clipboard(self) -> None:
+        """현재 화면(컨트롤 바 + 탭 내용)을 캡쳐해 클립보드에 복사.
+        Ctrl+V 로 AI 챗(Claude/ChatGPT) 입력란에 바로 붙여넣을 수 있음.
+        - 일반 모드: 컨트롤 바 + 차트(또는 수급·펀더 탭) 전체
+        - 스텔스 모드: 작은 라벨만 (의미 없음 — 자동으로 일반 모드로 전환할까?)
+        """
+        try:
+            target = self.centralWidget() if self.centralWidget() else self
+            pix = target.grab()
+            cb = QApplication.clipboard()
+            cb.setPixmap(pix)
+            try:
+                self.status.setText("📋 화면 캡쳐 — Ctrl+V 로 AI에 붙여넣기 (C 단축키)")
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                self.status.setText(f"캡쳐 실패: {e}")
+            except Exception:
+                pass
+
+    def _adjust_opacity(self, delta: float) -> None:
+        """창 투명도 조절. 0.2(매우 투명) ~ 1.0(불투명) 범위.
+        너무 투명하면 안 보여서 0.2 이하로는 안 내림."""
+        try:
+            cur = self.windowOpacity()
+        except Exception:
+            cur = 1.0
+        new = max(0.2, min(1.0, cur + delta))
+        self.setWindowOpacity(new)
+        try:
+            self.status.setText(f"투명도 {int(new * 100)}%  ([·] 조절, \\ 복원)")
+        except Exception:
+            pass
+
+    def _set_timeframe(self, tf: str) -> None:
+        """주기 콤보박스 값 변경 (currentIndexChanged 트리거됨)."""
+        for i in range(self.tf_combo.count()):
+            if self.tf_combo.itemData(i) == tf:
+                if self.tf_combo.currentIndex() != i:
+                    self.tf_combo.setCurrentIndex(i)
+                return
+
+    def _refresh_completer_model(self) -> None:
+        """ticker_master에서 (code, name) 읽어 'name (code)' 형식 문자열 리스트로 자동완성 모델 갱신."""
+        try:
+            tickers = load_all_tickers()
+            items = [f"{name} ({code})" for code, name in tickers]
+            self._completer_model.setStringList(items)
+        except Exception:
+            pass
+
     def _toggle_stealth(self) -> None:
         """스텔스 모드: 차트/탭/색상 다 숨기고 종목명+가격만 작은 흑색으로."""
         self._stealth_on = self.btn_stealth.isChecked()
@@ -2026,10 +2583,14 @@ class DataChartWindow(QMainWindow):
             self._bar_layout.setContentsMargins(2, 1, 2, 1)
             self._bar_layout.setSpacing(4)
 
-            # 종목코드 입력란 컴팩트
-            self.code_input.setMaximumWidth(60)
-            self.code_input.setMinimumWidth(50)
-            self.code_input.setStyleSheet("font-size: 11px; padding: 1px 3px;")
+            # 종목코드 입력란 숨김 (포커스 가져가면 A 단축키 안 먹히는 문제 방지)
+            self.code_input.hide()
+            # 혹시 포커스 잡혀있으면 떼어내기
+            try:
+                self.code_input.clearFocus()
+                self.setFocus()
+            except Exception:
+                pass
 
             # 종목명·가격 작은 흑색
             self.name_label.setStyleSheet(
@@ -2069,6 +2630,7 @@ class DataChartWindow(QMainWindow):
                 w.show()
             self.tabs.show()
 
+            self.code_input.show()
             self.code_input.setMaximumWidth(100)
             self.code_input.setMinimumWidth(0)
             self.code_input.setStyleSheet("")
@@ -2263,16 +2825,32 @@ class DataChartWindow(QMainWindow):
             )
 
     def load_all(self) -> None:
-        code = self.code_input.text().strip()
-        if not (code.isdigit() and len(code) == 6):
-            self.status.setText("6자리 종목코드를 입력하세요")
+        raw = self.code_input.text().strip()
+        # 6자리 코드 그대로 / 한글 이름 → 코드 자동 변환
+        code = resolve_ticker(raw)
+        if not code:
+            self.status.setText(f"매치 없음: '{raw}' — 6자리 코드 또는 정확한 종목명")
             return
+        # 입력란을 정규화된 코드로 갱신 (사용자가 이름 입력했으면 코드 표시)
+        if raw != code and code is not None:
+            try:
+                self.code_input.blockSignals(True)
+                self.code_input.setText(code)
+                self.code_input.blockSignals(False)
+            except Exception:
+                pass
         # 종목/주기 변경 시 진행 중이던 라이브 봉 + 5분봉 캐시 초기화
         self._live_bar = None
         self._last_kis_price = None
         self._min5_history = None
 
         name = get_name(code)
+        # ticker_master 갱신 (이번에 조회한 종목 cache)
+        try:
+            upsert_ticker(code, name)
+            self._refresh_completer_model()
+        except Exception:
+            pass
         self.name_label.setText(f"📊 {name}")
         self.status.setText(f"{name}({code}) 조회 중...")
         QApplication.processEvents()
@@ -2296,10 +2874,13 @@ class DataChartWindow(QMainWindow):
         snapshot = fetch_naver_snapshot(code) if (
             fundamental.empty or cap.empty or (foreign is None or foreign.empty)
         ) else {}
-        flow_naver = fetch_naver_investor_flow(code) if investor.empty else pd.DataFrame()
+        # 수급 ~3개월치 (페이지당 ~20행, 6 page ≈ 120 거래일 ≈ 6개월 — 넉넉히)
+        flow_naver = fetch_naver_investor_flow(code, pages=6) if investor.empty else pd.DataFrame()
+        # KIS 종목별 프로그램매매 일별 (실전 키 있을 때만)
+        program_df = kis_program_trade_by_stock_daily(code)
 
         self._render_price(ohlcv, code)
-        self._render_flow(investor, flow_naver)
+        self._render_flow(investor, flow_naver, program_df)
         self._render_fundamental(code, name, ohlcv, fundamental, cap, foreign, snapshot)
 
         last_close = ohlcv["close"].iloc[-1]
@@ -2337,6 +2918,90 @@ class DataChartWindow(QMainWindow):
             if self._price_label_timer.isActive():
                 self._price_label_timer.stop()
         fplt.refresh()
+
+    _YAXIS_PATCHED = False
+
+    @classmethod
+    def _ensure_yaxis_patch(cls):
+        """finplot.YAxisItem.tickStrings를 한 번만 클래스 레벨로 monkey-patch.
+        축 인스턴스에 `_dc_vol_format` 함수가 붙어있으면 그걸 사용, 아니면 원본 호출."""
+        if cls._YAXIS_PATCHED:
+            return
+        try:
+            ya_cls = fplt.YAxisItem
+            orig = ya_cls.tickStrings
+            def _patched(self, values, scale, spacing):
+                fmt = getattr(self, "_dc_vol_format", None)
+                if fmt is not None:
+                    try:
+                        # finplot은 정규화된 [0,1] 좌표값을 넘기고 vb.yscale.xform이 실제 데이터값으로 변환
+                        xform = self.vb.yscale.xform if (self.vb and getattr(self.vb, "yscale", None)) else (lambda x: x)
+                        real_values = [xform(v) for v in values]
+                        return fmt(real_values)
+                    except Exception:
+                        pass
+                return orig(self, values, scale, spacing)
+            ya_cls.tickStrings = _patched
+            cls._YAXIS_PATCHED = True
+        except Exception:
+            pass
+
+    def _format_volume_y_axis(self, ax) -> None:
+        """거래량 Y축 — 주기에 따라 동적 포맷 (finplot YAxisItem 클래스 패치 후 인스턴스 플래그).
+        - 일/주봉: K 단위 (1,000,000 → 1000K, 500,000 → 500K)
+        - 5분봉: raw 값 + 콤마 (1,500 / 300)
+        """
+        self._ensure_yaxis_patch()
+        def vol_format(values):
+            try:
+                tf = self.tf_combo.currentData()
+            except Exception:
+                tf = "day"
+            out = []
+            if tf == "min5":
+                for v in values:
+                    absv = abs(v)
+                    if absv >= 1:
+                        out.append(f"{int(v):,}")
+                    elif absv > 0:
+                        out.append(f"{v:.2g}")
+                    else:
+                        out.append("0")
+            else:
+                for v in values:
+                    absv = abs(v)
+                    if absv >= 1000:
+                        out.append(f"{v / 1000:.0f}K")
+                    elif absv >= 1:
+                        out.append(f"{int(v):,}")
+                    elif absv > 0:
+                        out.append(f"{v:.2g}")
+                    else:
+                        out.append("0")
+            return out
+        for axis_name in ("right", "left"):
+            try:
+                axis = ax.getAxis(axis_name)
+                if axis is None:
+                    continue
+                # 인스턴스 플래그로 패치된 tickStrings에서 우리 포맷 호출하게 함
+                axis._dc_vol_format = vol_format
+                try:
+                    axis.enableAutoSIPrefix(False)
+                except Exception:
+                    pass
+                try:
+                    axis.setLabel(text="거래량 (주)")
+                except Exception:
+                    pass
+                # tick 캐시 무효화 → 즉시 새 포맷으로 재그림
+                try:
+                    axis.picture = None
+                    axis.update()
+                except Exception:
+                    pass
+            except Exception:
+                pass
 
     @staticmethod
     def _format_y_axis_kmb(ax, label_text: str = "") -> None:
@@ -2413,8 +3078,9 @@ class DataChartWindow(QMainWindow):
             if len(d) >= period:
                 fplt.plot(d["close"].rolling(period).mean(),
                           ax=self.price_ax, color=color, width=w)
-        # 거래량 raw 데이터 그대로 (autoSIPrefix가 axis 라벨에 prefix 추가)
+        # 거래량 raw 데이터 그대로 — 주기별 K/raw 포맷 (vol_ax.reset() 후 매번 재적용)
         fplt.volume_ocv(d[["open", "close", "volume"]], ax=self.vol_ax)
+        self._format_volume_y_axis(self.vol_ax)
         # 좌상단 "최대 거래량" 오버레이 갱신
         try:
             max_vol = float(d["volume"].max() or 0)
@@ -2428,9 +3094,90 @@ class DataChartWindow(QMainWindow):
         if self.cb_ichimoku.isChecked():
             self._draw_ichimoku(d)
 
+        # RSI / MACD (옵션) — 켜져있으면 데이터 갱신
+        if self.cb_rsi.isChecked():
+            self._draw_rsi(d)
+        if self.cb_macd.isChecked():
+            self._draw_macd(d)
+
+    def _draw_rsi(self, d: pd.DataFrame) -> None:
+        """RSI(14) 그리기 — 보라색 선 + 30/70/50 점선 가이드 + 우상단 현재값."""
+        self.rsi_ax.reset()
+        if len(d) < 14:
+            return
+        rsi = compute_rsi(d["close"], period=14)
+        rsi_clean = rsi.dropna()
+        if rsi_clean.empty:
+            return
+        fplt.plot(rsi, ax=self.rsi_ax, color="#7733cc", width=1.0)
+        # 30/70 점선 + 50 가는 점선
+        import pyqtgraph as pg
+        for level, color, w in [(70, "#cc4444", 0.6), (50, "#888888", 0.3), (30, "#4488cc", 0.6)]:
+            line = pg.InfiniteLine(pos=level, angle=0,
+                                   pen=pg.mkPen(color, style=Qt.DashLine, width=w))
+            self.rsi_ax.addItem(line)
+        # 좌상단 현재값 라벨
+        try:
+            cur = float(rsi_clean.iloc[-1])
+            zone = "과매수" if cur >= 70 else ("과매도" if cur <= 30 else "중립")
+            self._rsi_legend.setText(f"RSI(14): {cur:.1f}  ·  {zone}")
+        except Exception:
+            pass
+
+    def _draw_macd(self, d: pd.DataFrame) -> None:
+        """MACD(12/26/9) — MACD선(파랑), Signal선(주황), Histogram(0선 위/아래 색 분리), 0 가이드."""
+        self.macd_ax.reset()
+        if len(d) < 26:
+            return
+        m = compute_macd(d["close"], fast=12, slow=26, signal=9)
+        macd, signal, hist = m["macd"], m["signal"], m["histogram"]
+        if macd.dropna().empty:
+            return
+        import pyqtgraph as pg
+        # 0 가이드선
+        zero_line = pg.InfiniteLine(pos=0, angle=0,
+                                    pen=pg.mkPen("#888888", style=Qt.DashLine, width=0.4))
+        self.macd_ax.addItem(zero_line)
+        # Histogram — 양수 빨강, 음수 파랑 (한국 시장 관례)
+        # finplot.bar 가 OHLC 모양 막대를 못 그려서 직접 BarGraphItem 사용
+        try:
+            from PySide6.QtGui import QColor
+            x_idx = list(range(len(hist)))
+            heights = hist.fillna(0).values
+            # 양/음 분리해서 그려야 색 구분 가능
+            pos_x = [i for i, v in zip(x_idx, heights) if v >= 0]
+            pos_h = [v for v in heights if v >= 0]
+            neg_x = [i for i, v in zip(x_idx, heights) if v < 0]
+            neg_h = [v for v in heights if v < 0]
+            if pos_x:
+                bar_pos = pg.BarGraphItem(x=pos_x, height=pos_h, width=0.7,
+                                          brush="#ff9988", pen=pg.mkPen("#dd2200", width=0))
+                self.macd_ax.addItem(bar_pos)
+            if neg_x:
+                bar_neg = pg.BarGraphItem(x=neg_x, height=neg_h, width=0.7,
+                                          brush="#88aaff", pen=pg.mkPen("#0066dd", width=0))
+                self.macd_ax.addItem(bar_neg)
+        except Exception:
+            pass
+        # MACD 선 / Signal 선 (line plot은 finplot 으로)
+        fplt.plot(macd, ax=self.macd_ax, color="#0066dd", width=1.0)
+        fplt.plot(signal, ax=self.macd_ax, color="#ff8800", width=1.0)
+        # 좌상단 현재값 라벨
+        try:
+            cm = float(macd.dropna().iloc[-1])
+            cs = float(signal.dropna().iloc[-1])
+            ch = float(hist.dropna().iloc[-1])
+            cross = "골든" if cm > cs and ch > 0 else ("데드" if cm < cs and ch < 0 else "혼조")
+            self._macd_legend.setText(
+                f"MACD: {cm:+.1f}  ·  Sig: {cs:+.1f}  ·  Hist: {ch:+.1f}  ·  {cross}"
+            )
+        except Exception:
+            pass
+
     def _draw_ichimoku(self, d: pd.DataFrame) -> None:
         """일목균형표 — 선행스팬1·2를 점선으로 표시.
-        파라미터: 전환 9, 기준 26, 선행스팬2 52, 선행/후행 shift 26 (HTS 표준)."""
+        파라미터: 전환 9, 기준 26, 선행스팬2 52, 선행/후행 shift 26 (HTS 표준).
+        그려진 plot 아이템을 self._ichi_items에 저장 → 토글 OFF 시 제거 가능."""
         ichi = compute_ichimoku(d, conv=9, base=26, span_b_period=52, shift=26)
         if ichi["senkou_a"].dropna().empty:
             return
@@ -2448,6 +3195,20 @@ class DataChartWindow(QMainWindow):
                 b.setPen(pg.mkPen(QColor("#0066dd"), width=1, style=Qt.DashLine))
         except Exception:
             pass
+        # 토글 OFF 시 제거할 수 있도록 추적
+        self._ichi_items = [item_a, item_b]
+
+    def _remove_ichimoku(self) -> None:
+        """일목균형표 plot 아이템만 제거 (price_ax 전체 reset 안 함 → zoom 보존)."""
+        items = getattr(self, "_ichi_items", None)
+        if not items:
+            return
+        for it in items:
+            try:
+                self.price_ax.removeItem(it)
+            except Exception:
+                pass
+        self._ichi_items = []
 
     @staticmethod
     def _make_diagonal_brush(color_rgb: tuple, tile: int = 8, alpha: int = 220):
@@ -2488,13 +3249,25 @@ class DataChartWindow(QMainWindow):
         self.price_ax.addItem(fill_hatch)
 
     def _draw_compare_index(self, d: pd.DataFrame) -> None:
-        """선택된 비교 지수를 종목 가격과 동일점 정규화해 오버레이."""
+        """선택된 비교 지수를 종목 가격과 동일점 정규화해 오버레이.
+        KRX API가 평일 단위로 호출되므로 캐시 빈 첫 fetch는 수백 회 → progress_cb로
+        status 갱신 + processEvents 로 UI 응답성 유지 (안 하면 'Not Responding')."""
         cmp_idx = self.cmp_combo.currentData()
         if not cmp_idx:
             return
-        idx_df = fetch_krx_index_daily(cmp_idx, days=DEFAULT_DAYS)
+        def _prog(done: int, total: int) -> None:
+            try:
+                self.status.setText(f"{cmp_idx} 지수 불러오는 중 ({done}/{total})...")
+                QApplication.processEvents()
+            except Exception:
+                pass
+        self.status.setText(f"{cmp_idx} 지수 불러오는 중...")
+        QApplication.processEvents()
+        idx_df = fetch_krx_index_daily(cmp_idx, days=DEFAULT_DAYS, progress_cb=_prog)
         if idx_df.empty:
+            self.status.setText(f"{cmp_idx} 지수 데이터 없음 (KRX 키/서비스 권한 확인)")
             return
+        self.status.setText(f"{cmp_idx} 오버레이 완료")
         k = idx_df.copy()
         k["date"] = pd.to_datetime(k["date"])
         k = k.set_index("date").sort_index()
@@ -2502,13 +3275,41 @@ class DataChartWindow(QMainWindow):
         if k.empty:
             return
         k_norm = k["close"] / k["close"].iloc[0] * d["close"].iloc[0]
-        fplt.plot(k_norm, ax=self.price_ax, color="#888800", width=0.7)
+        # 좀 더 두껍게 + 짙은 색으로 (얇은 노랑은 캡쳐에서 잘 안 보임)
+        line_color = "#ff8800"  # 주황 — MA·캔들 어떤 색과도 안 겹침
+        item = fplt.plot(k_norm, ax=self.price_ax, color=line_color, width=1.5,
+                         legend=f"비교: {cmp_idx} (정규화)")
+        # 우측 끝점에 명시적 라벨 부착 — AI 캡쳐 분석 시 라인 정체 인식하게 함
+        try:
+            import pyqtgraph as pg
+            from PySide6.QtGui import QColor
+            last_x = len(d) - 1
+            last_y = float(k_norm.iloc[-1])
+            text = pg.TextItem(text=f"  {cmp_idx} (정규화)", color=QColor(line_color),
+                               anchor=(0, 0.5))
+            text.setPos(last_x, last_y)
+            self.price_ax.addItem(text)
+            # 토글/주기 변경 시 정리 위해 리스트로 보관 (선택)
+            if not hasattr(self, "_compare_items"):
+                self._compare_items = []
+            self._compare_items.append(text)
+        except Exception:
+            pass
 
     # --- 렌더러 ---------------------------------------------------------
     def _render_price(self, daily_df: pd.DataFrame, code: str) -> None:
         """선택된 주기(일/주/5분)에 맞춰 캔들 + MA + 거래량 렌더."""
         self.price_ax.reset()
         self.vol_ax.reset()
+        self.rsi_ax.reset()
+        self.macd_ax.reset()
+        # reset()이 X-link을 끊을 수 있어 매번 재확립
+        try:
+            self.vol_ax.setXLink(self.price_ax)
+            self.rsi_ax.setXLink(self.price_ax)
+            self.macd_ax.setXLink(self.price_ax)
+        except Exception:
+            pass
         tf = self.tf_combo.currentData()
 
         # 일/주봉 모드에 오늘 봉 합성:
@@ -2616,6 +3417,8 @@ class DataChartWindow(QMainWindow):
         d[time_col] = pd.to_datetime(d[time_col])
         d = d.set_index(time_col).sort_index()
 
+        # 일목 토글 시 재사용할 데이터 캐시 (datetime-index 가진 OHLCV)
+        self._last_render_data = d
         # 캔들 + 4종 이동평균(5/20/112/224) + 거래량 + 일목균형표 (공통 헬퍼)
         self._draw_candle_volume_indicators(d)
 
@@ -2650,7 +3453,8 @@ class DataChartWindow(QMainWindow):
         if tf in ("day", "week"):
             self._draw_compare_index(d)
 
-    def _render_flow(self, df: pd.DataFrame, naver_df: pd.DataFrame | None = None) -> None:
+    def _render_flow(self, df: pd.DataFrame, naver_df: pd.DataFrame | None = None,
+                     program_df: pd.DataFrame | None = None) -> None:
         self.flow_ax.reset()
         # KRX 데이터(거래대금 원) 우선
         if not df.empty:
@@ -2664,10 +3468,12 @@ class DataChartWindow(QMainWindow):
                       legend="기관 누적순매수(억원)", color="#3366cc")
             fplt.plot(d["individual"].cumsum() / scale, ax=self.flow_ax,
                       legend="개인 누적순매수(억원)", color="#999999")
+            self._fill_flow_table(d, source="KRX", program_df=program_df)
             return
 
         # KRX 비었으면 Naver 폴백 (단위는 주식수 기반 → 종가 곱해서 거래대금 추정)
         if naver_df is None or naver_df.empty:
+            self._fill_flow_table(pd.DataFrame(), source="Naver", program_df=program_df)
             return
         d = naver_df.copy()
         d["date"] = pd.to_datetime(d["date"])
@@ -2680,6 +3486,122 @@ class DataChartWindow(QMainWindow):
                   legend="외국인 누적순매수(억원·Naver)", color="#cc3333")
         fplt.plot(inst_value, ax=self.flow_ax,
                   legend="기관 누적순매수(억원·Naver)", color="#3366cc")
+        self._fill_flow_table(d, source="Naver", program_df=program_df)
+
+    def _fill_flow_table(self, d: pd.DataFrame, source: str,
+                         program_df: pd.DataFrame | None = None) -> None:
+        """일별 투자자별 순매매 + 프로그램매매 차익/비차익 테이블 채움.
+        최신 날짜가 위 (MTS 관례).
+        - source='KRX': foreign_all / institution / individual (거래대금 원→억원)
+        - source='Naver': foreign_net / institution_net + 개인은 -(외+기) (주)
+        - program_df: KIS 프로그램매매 일별 (date, arb_net, nonarb_net 주)
+        """
+        from PySide6.QtGui import QBrush, QColor
+        self.flow_table.setRowCount(0)
+        if d is None or d.empty:
+            return
+
+        # 프로그램매매 데이터 인덱싱 (날짜로 빠른 조회)
+        prog_idx = None
+        if program_df is not None and not program_df.empty:
+            pdf = program_df.copy()
+            pdf["date"] = pd.to_datetime(pdf["date"])
+            prog_idx = pdf.set_index("date")
+
+        d_sorted = d.sort_index(ascending=False)  # 최신 위
+        rows = []
+        # 등락률 계산용으로 시간순 close 변화 미리 만들기
+        close_seq = d.sort_index()["close"] if "close" in d.columns else None
+        pct_chg = close_seq.pct_change() * 100 if close_seq is not None else None
+
+        for date, row in d_sorted.iterrows():
+            close = row.get("close", None)
+            volume = row.get("volume", None)
+            if source == "KRX":
+                fr = row.get("foreign_all", 0) / 1e8 if "foreign_all" in row else None
+                ins = row.get("institution", 0) / 1e8 if "institution" in row else None
+                indi = row.get("individual", 0) / 1e8 if "individual" in row else None
+                fr_unit = "억원"
+                f_rate = None
+            else:
+                fr = row.get("foreign_net")
+                ins = row.get("institution_net")
+                indi = -(fr + ins) if (fr is not None and ins is not None) else None
+                fr_unit = "주"
+                f_rate = row.get("foreign_rate")
+            chg = pct_chg.loc[date] if (pct_chg is not None and date in pct_chg.index) else None
+            # 프로그램매매 lookup
+            arb_net = nonarb_net = None
+            if prog_idx is not None:
+                d_norm = pd.Timestamp(date).normalize()
+                if d_norm in prog_idx.index:
+                    pr = prog_idx.loc[d_norm]
+                    arb_net = pr.get("arb_net")
+                    nonarb_net = pr.get("nonarb_net")
+            rows.append((date, close, chg, volume, fr, ins, indi, f_rate, fr_unit,
+                         arb_net, nonarb_net))
+
+        self.flow_table.setRowCount(len(rows))
+        red = QBrush(QColor("#cc2200"))
+        blue = QBrush(QColor("#0066cc"))
+        gray = QBrush(QColor("#666666"))
+
+        def _fmt_int(v) -> str:
+            if v is None or pd.isna(v):
+                return "-"
+            return f"{int(v):,}"
+
+        def _fmt_signed(v, unit: str = "") -> str:
+            if v is None or pd.isna(v):
+                return "-"
+            if unit == "억원":
+                return f"{v:+,.1f}"
+            return f"{int(v):+,}"
+
+        for i, r in enumerate(rows):
+            (date, close, chg, volume, fr, ins, indi, f_rate, fr_unit,
+             arb_net, nonarb_net) = r
+            cells = [
+                pd.Timestamp(date).strftime("%Y-%m-%d"),
+                _fmt_int(close),
+                f"{chg:+.2f}" if (chg is not None and not pd.isna(chg)) else "-",
+                _fmt_int(volume),
+                _fmt_signed(fr, fr_unit),
+                _fmt_signed(ins, fr_unit),
+                _fmt_signed(indi, fr_unit),
+                f"{f_rate:.2f}" if (f_rate is not None and not pd.isna(f_rate)) else "-",
+                _fmt_signed(arb_net),
+                _fmt_signed(nonarb_net),
+            ]
+            for col, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                # 등락·순매매·프로그램매매 부호별 색
+                if col == 2:
+                    if chg is not None and not pd.isna(chg):
+                        item.setForeground(red if chg > 0 else (blue if chg < 0 else gray))
+                elif col in (4, 5, 6):
+                    val = (fr, ins, indi)[col - 4]
+                    if val is not None and not pd.isna(val):
+                        item.setForeground(red if val > 0 else (blue if val < 0 else gray))
+                elif col in (8, 9):
+                    val = (arb_net, nonarb_net)[col - 8]
+                    if val is not None and not pd.isna(val):
+                        item.setForeground(red if val > 0 else (blue if val < 0 else gray))
+                if col >= 1:
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.flow_table.setItem(i, col, item)
+        # 헤더 갱신 (10개 컬럼)
+        unit_str = "억원" if source == "KRX" else "주"
+        self.flow_table.setColumnCount(10)
+        self.flow_table.setHorizontalHeaderLabels([
+            "날짜", "종가", "등락(%)", "거래량",
+            f"외국인({unit_str})",
+            f"기관({unit_str})",
+            f"개인({unit_str})",
+            "외국인 지분율(%)",
+            "프로그램 차익(주)",
+            "프로그램 비차익(주)",
+        ])
 
     def _render_fundamental(
         self,
